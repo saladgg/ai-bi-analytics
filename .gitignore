@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+env/
+
+# Tools
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+
+# Poetry
+.poetry/
+
+# Docker
+*.dockerignore
+docker-compose.override.yml
+
+# Secrets & local config
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# IDE & OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# New
+ai_bi_backend.egg-info
+app/temp_test_tables.py
+todos.md
+uv.lock

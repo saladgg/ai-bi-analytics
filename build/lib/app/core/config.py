@@ -5,8 +5,8 @@ Loads and validates environment-based settings using Pydantic.
 Ensures centralized configuration management.
 """
 
-from pydantic import Field
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     Attributes:
         app_name (str): Application name.
-        env (str): Runtime environment (development, staging, production).
+        environment (str): Runtime environment (development, staging, production).
         log_level (str): Logging verbosity level.
         api_key (str): Static API key for request authentication.
         database_url (str): SQLAlchemy database connection string.
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     """
 
     app_name: str = Field(default="ai-bi-backend", alias="APP_NAME")
-    env: str = Field(default="development", alias="ENV")
+    environment: str = Field(default="development", alias="ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     api_key: str = Field(alias="API_KEY")

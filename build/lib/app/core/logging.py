@@ -5,7 +5,6 @@ Configures application-wide structured logging.
 """
 
 import logging
-
 from app.core.config import settings
 
 

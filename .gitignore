@@ -43,6 +43,3 @@ ai_bi_backend.egg-info
 app/temp_test_tables.py
 todos.md
 uv.lock
-=======
-Thumbs.db
->>>>>>> 4a12a46 (init: Initial commit)

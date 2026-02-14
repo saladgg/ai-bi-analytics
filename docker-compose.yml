@@ -1,0 +1,20 @@
+version: "3.14"
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: readonly_user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: analytics_db
+    ports:
+      - "5432:5432"
+
+  api:
+    build: .
+    depends_on:
+      - db
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"

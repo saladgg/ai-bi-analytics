@@ -6,10 +6,8 @@ and exposes the application instance used by ASGI servers.
 """
 
 from fastapi import FastAPI
-
-from app.api.routes import query
-from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.config import settings
 
 
 def create_app() -> FastAPI:
@@ -21,8 +19,7 @@ def create_app() -> FastAPI:
     """
 
     setup_logging()
-
-    new_app = FastAPI(
+    app = FastAPI(
         title="AI-Powered Business Intelligence Backend",
         description=(
             "A production-grade backend service that enables "
@@ -32,13 +29,12 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
-    @new_app.on_event("startup")
+    @app.on_event("startup")
     def startup_event():
         import logging
+        logging.info(f"Starting {settings.app_name} in {settings.environment}")
 
-        logging.info(f"Starting {settings.app_name} in {settings.env}")
-
-    @new_app.get("/health", tags=["health"])
+    @app.get("/health", tags=["health"])
     def health_check() -> dict[str, str]:
         """
         Health check endpoint used for monitoring and orchestration.
@@ -48,8 +44,7 @@ def create_app() -> FastAPI:
         """
         return {"status": "ok"}
 
-    return new_app
+    return app
 
 
 app = create_app()
-app.include_router(query.router, prefix="/api")

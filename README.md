@@ -21,10 +21,12 @@ This system:
 
 ## Architecture
 
+```doctest
 [Include simple architecture diagram]
 
 Client → FastAPI → NL-to-SQL → SQL Validator → PostgreSQL
                               → Explanation Service
+```
 
 ## Key Engineering Decisions
 
@@ -37,20 +39,22 @@ Client → FastAPI → NL-to-SQL → SQL Validator → PostgreSQL
 
 ## Example Request
 
+```json
 POST /api/query
 
 {
   "question": "What are the top 3 products by revenue?"
 }
+```
 
 ## Example Response
-
+```json
 {
   "sql": "...",
   "result": [...],
   "explanation": "The top three products by revenue are..."
 }
-
+```
 
 ## Basic start-up commands
 ```bash

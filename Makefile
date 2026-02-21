@@ -19,86 +19,69 @@ help:
 	@echo "  make docker-build   Build Docker image"
 
 
-# ----------------------------------------------------------
-# Variables
-# ----------------------------------------------------------
-
-APP=app.main:app
-HOST=0.0.0.0
-PORT=8000
+.PHONY: all
+all: clean lint format fix test
 
 # ----------------------------------------------------------
 # Dependency Management
 # ----------------------------------------------------------
+# Create ~/.netrc for private pip credentials(for uv)
 
-.PHONY: install
+.PHONY: venv_setup
+venv_setup:
+	uv venv --python 3.14 && source .venv/bin/activate
+
+.PHONY: install install-dev
+
 install:
+	uv lock --prerelease=allow
 	uv sync
 
-.PHONY: install-dev
 install-dev:
-	uv sync --extra dev
+	uv lock --prerelease=allow
+	uv sync --group dev
 
 .PHONY: update
 update:
-	uv lock --upgrade
-
-# ----------------------------------------------------------
-# Run Application
-# ----------------------------------------------------------
-
-.PHONY: run
-run:
-	uv run uvicorn $(APP) --reload --host $(HOST) --port $(PORT)
-
-.PHONY: prod
-prod:
-	uv run uvicorn $(APP) --host $(HOST) --port $(PORT)
+	uv lock --upgrade --prerelease=allow
 
 # ----------------------------------------------------------
 # Linting & Formatting
 # ----------------------------------------------------------
 
-.PHONY: lint
+SOURCE = app
+
+.PHONY: lint format fix test
+
 lint:
-	uv run ruff check app
+	uv run ruff check $(SOURCE)
+	uv run mypy $(SOURCE)
 
-.PHONY: format
 format:
-	uv run black app
-	uv run isort app
+	uv run ruff format $(SOURCE)
 
-.PHONY: lint-fix
-lint-fix:
-	uv run ruff check app --fix
-	uv run black app
-	uv run isort app
+fix:
+	uv run ruff check $(SOURCE) --fix
+	uv run ruff format $(SOURCE)
 
-.PHONY: check
-check:
-	uv run ruff check app
-	uv run black --check app
-	uv run isort --check-only app
-
-# ----------------------------------------------------------
-# Testing
-# ----------------------------------------------------------
-
-.PHONY: test
 test:
 	uv run pytest
 
-.PHONY: test-cov
-test-cov:
-	uv run pytest --cov=app --cov-report=term-missing
-
 # ----------------------------------------------------------
-# Security / Safety
+# Run Application
 # ----------------------------------------------------------
+APP=app.main:app
+HOST=0.0.0.0
+PORT=8000
 
-.PHONY: safety
-safety:
-	uv run pip check
+.PHONY: run_local
+run_local:
+	uv run uvicorn $(APP) --reload --host $(HOST) --port $(PORT)
+
+.PHONY: run_prod
+run_prod:
+	uv run uvicorn $(APP) --host $(HOST) --port $(PORT)
+
 
 # ----------------------------------------------------------
 # Docker
@@ -115,6 +98,25 @@ docker-up:
 .PHONY: docker-down
 docker-down:
 	docker compose down
+
+# ----------------------------------------------------------
+# Packaging & Publishing
+# ----------------------------------------------------------
+
+.PHONY: build
+build:
+	rm -rf dist
+	uv run python -m build
+
+.PHONY: tempTarget
+tempTarget:
+	UV_PUBLISH_USERNAME=$(CI_PYPI_USER) \
+	UV_PUBLISH_PASSWORD=$(CI_PYPI_PASSWORD) \
+	uv publish --index temp_index dist/*
+
+.PHONY: release
+release: build publish
+
 
 # ----------------------------------------------------------
 # Clean

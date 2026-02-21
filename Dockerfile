@@ -6,7 +6,7 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # Copy only dependency files first (better caching)
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock* ./
 
 # Install dependencies
 RUN uv sync --no-dev

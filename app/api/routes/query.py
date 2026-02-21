@@ -25,8 +25,8 @@ def query_database(
     """
     Full NL → SQL → Execute pipeline.
     """
-
     try:
+        logger.info("Starting db query........")
         sql = generate_sql(payload.question)
         validate_sql(sql)
         result = execute_query(db, sql)
@@ -47,4 +47,5 @@ def query_database(
             explanation=explanation,
         )
     except Exception as exc:
+        logger.error("Request failure: ", str(exc))
         raise HTTPException(status_code=400, detail=str(exc))  # noqa B008

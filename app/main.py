@@ -32,13 +32,15 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
+    new_app.include_router(query.router, prefix="/api")
+
     @new_app.on_event("startup")
     def startup_event():
         import logging
 
         logging.info(f"Starting {settings.app_name} in {settings.env}")
 
-    @new_app.get("/health", tags=["health"])
+    @new_app.get("/api/health", tags=["health"])
     def health_check() -> dict[str, str]:
         """
         Health check endpoint used for monitoring and orchestration.
@@ -52,4 +54,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-app.include_router(query.router, prefix="/api")

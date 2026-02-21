@@ -26,7 +26,6 @@ def validate_sql(sql: str) -> None:
     """
 
     normalized = sql.strip().upper()
-
     if not normalized.startswith("SELECT"):
         raise ValueError("Only SELECT statements are allowed.")
 

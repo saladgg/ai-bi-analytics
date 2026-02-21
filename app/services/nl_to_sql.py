@@ -17,10 +17,14 @@ products(
 )
 
 Rules:
-- Only generate a single SELECT query.
 - Do NOT use INSERT, UPDATE, DELETE, DROP, or ALTER.
+- Output must contain SQL only.
+- Do NOT wrap the query in markdown.
+- Do NOT use triple backticks.
 - Do NOT include explanations.
-- Return SQL only.
+- Do NOT prefix with 'SQL'.
+- Must begin directly with SELECT.
+- Only one statement allowed.
 """
 
 

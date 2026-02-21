@@ -10,6 +10,10 @@ queries over PostgreSQL with safe SQL generation and explainable outputs.
 Business users need insights from databases but cannot write SQL.
 Naive LLM integrations risk unsafe query execution.
 
+{
+    "slade_code": 5564 or 5514
+}
+
 ## Solution
 
 This system:
@@ -64,7 +68,8 @@ user@comp: ai_bi_backend\λ uv venv --python 3.14 # create venv
 user@comp: ai_bi_backend\λ source .venv/bin/activate # activate the venv
 (ai_bi_backend) user@comp: ai_bi_backend\λ make help # show available make commands
 (ai_bi_backend) user@comp: ai_bi_backend\λ make install-dev
-(ai_bi_backend) user@comp: ai_bi_backend\λ make run
+(ai_bi_backend) user@comp: ai_bi_backend\λ make all # clean lint format fix test
+(ai_bi_backend) user@comp: ai_bi_backend\λ make run_local # run the service
 ```
 
 ## Docker commands
@@ -74,4 +79,3 @@ user@comp: ai_bi_backend\λ source .venv/bin/activate # activate the venv
 (ai_bi_backend) user@comp: ai_bi_backend\λ make docker-up
 (ai_bi_backend) user@comp: ai_bi_backend\λ make docker-down
 ```
-

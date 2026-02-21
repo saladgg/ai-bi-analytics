@@ -18,6 +18,5 @@ jobs:
 
       - run: pip install uv
       - run: make install-dev
-      - run: make check
-      - run: make test
+      - run: make all
 

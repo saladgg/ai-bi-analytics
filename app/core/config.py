@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     api_key: str = Field(alias="API_KEY")
-
     database_url: str = Field(alias="DATABASE_URL")
 
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")

@@ -17,6 +17,7 @@ env/
 coverage.xml
 htmlcov/
 build/
+dist/
 
 # Poetry
 .poetry/
@@ -31,6 +32,7 @@ docker-compose.override.yml
 .env.*.local
 *.key
 *.pem
+.env
 
 # IDE & OS
 .idea/
@@ -40,6 +42,6 @@ Thumbs.db
 
 # New
 ai_bi_backend.egg-info
-app/temp_test_tables.py
+app/gen_test_table_data.py
 todos.md
 uv.lock

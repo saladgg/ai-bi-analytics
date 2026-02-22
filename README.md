@@ -1,4 +1,4 @@
-# AI-Powered Business Intelligence Backend
+# AI-Powered Business Intelligence API
 
 ## Overview
 
@@ -9,10 +9,6 @@ queries over PostgreSQL with safe SQL generation and explainable outputs.
 
 Business users need insights from databases but cannot write SQL.
 Naive LLM integrations risk unsafe query execution.
-
-{
-    "slade_code": 5564 or 5514
-}
 
 ## Solution
 

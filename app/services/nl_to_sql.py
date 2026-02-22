@@ -4,20 +4,12 @@ Natural language to SQL generation service.
 
 from app.services.llm_client import get_llm_client
 
-SCHEMA_DESCRIPTION = """
+SQL_GENERATION_RULES = """
 You are generating SQL for a PostgreSQL database.
 
-Available table:
-
-products(
-    id INTEGER PRIMARY KEY,
-    name VARCHAR,
-    category VARCHAR,
-    revenue FLOAT
-)
-
 Rules:
-- Do NOT use INSERT, UPDATE, DELETE, DROP, or ALTER.
+- Only generate a single SELECT statement.
+- Do NOT use INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, or CREATE.
 - Output must contain SQL only.
 - Do NOT wrap the query in markdown.
 - Do NOT use triple backticks.
@@ -28,12 +20,13 @@ Rules:
 """
 
 
-def generate_sql(question: str) -> str:
+def generate_sql(question: str, schema_description: str) -> str:
     """
     Converts natural-language question into safe SQL.
 
     Args:
         question (str): User question.
+        schema_description (str): Dynamically loaded schema metadata.
 
     Returns:
         str: Generated SQL query.
@@ -42,9 +35,12 @@ def generate_sql(question: str) -> str:
     llm = get_llm_client()
 
     prompt = f"""
-    {SCHEMA_DESCRIPTION}
+    {SQL_GENERATION_RULES}
     
-    Question:
+    Available database schema:
+    {schema_description}
+    
+    User Question:
     {question}
     """
 

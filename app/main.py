@@ -6,10 +6,13 @@ and exposes the application instance used by ASGI servers.
 """
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import query
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.rate_limiter import limiter
 
 
 def create_app() -> FastAPI:
@@ -22,7 +25,7 @@ def create_app() -> FastAPI:
 
     setup_logging()
 
-    new_app = FastAPI(
+    app = FastAPI(
         title="AI-Powered Business Intelligence Backend",
         description=(
             "A production-grade backend service that enables "
@@ -32,15 +35,25 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
-    new_app.include_router(query.router, prefix="/api")
+    app.state.limiter = limiter
+    app.add_exception_handler(
+        RateLimitExceeded,
+        lambda request, exc: JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded"},
+        ),
+    )
 
-    @new_app.on_event("startup")
+    @app.on_event("startup")
     def startup_event():
         import logging
 
         logging.info(f"Starting {settings.app_name} in {settings.env}")
 
-    @new_app.get("/api/health", tags=["health"])
+    # main endpoint
+    app.include_router(query.router, prefix="/api")
+
+    @app.get("/api/health", tags=["health"])
     def health_check() -> dict[str, str]:
         """
         Health check endpoint used for monitoring and orchestration.
@@ -50,7 +63,7 @@ def create_app() -> FastAPI:
         """
         return {"status": "ok"}
 
-    return new_app
+    return app
 
 
 app = create_app()

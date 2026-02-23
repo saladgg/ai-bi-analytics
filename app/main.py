@@ -6,13 +6,10 @@ and exposes the application instance used by ASGI servers.
 """
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import query
 from app.core.config import settings
 from app.core.logging import setup_logging
-from app.core.rate_limiter import limiter
 
 
 def create_app() -> FastAPI:
@@ -33,15 +30,6 @@ def create_app() -> FastAPI:
             "AI-powered SQL generation and explainable results."
         ),
         version="0.1.0",
-    )
-
-    app.state.limiter = limiter
-    app.add_exception_handler(
-        RateLimitExceeded,
-        lambda request, exc: JSONResponse(
-            status_code=429,
-            content={"detail": "Rate limit exceeded"},
-        ),
     )
 
     @app.on_event("startup")

@@ -4,10 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import verify_api_key
-from app.core.rate_limiter import limiter
+from app.core.rate_limiter import enforce_rate_limit
 from app.db.session import get_db
 from app.schemas.query import QueryRequest, QueryResponse
-from app.services.cache import generate_cache_key, query_cache
+from app.services.cache import (
+    generate_cache_key,
+    get_cached_response,
+    set_cached_response,
+)
 from app.services.explanation import explain_result
 from app.services.nl_to_sql import generate_sql
 from app.services.query_executor import execute_query
@@ -20,7 +24,6 @@ router = APIRouter()
 
 
 @router.post("/query", response_model=QueryResponse)
-@limiter.limit("5/minute")
 def query_database(
     request: Request,
     payload: QueryRequest,
@@ -30,12 +33,13 @@ def query_database(
     """
     Full NL → SQL → Execute pipeline.
     """
+    enforce_rate_limit(request)
     try:
         schema_description = load_schema_metadata(db)
-        cache_key = generate_cache_key(payload.question + schema_description)
-
-        if cache_key in query_cache:
-            return query_cache[cache_key]
+        cache_key = generate_cache_key(payload.question + "|" + schema_description)
+        cached = get_cached_response(cache_key)
+        if cached:
+            return cached
 
         sql = generate_sql(payload.question, schema_description)
         validate_sql(sql)
@@ -57,7 +61,10 @@ def query_database(
             explanation=explanation,
         )
 
-        query_cache[cache_key] = response
+        set_cached_response(
+            cache_key,
+            response.model_dump(),
+        )
 
         return response
 

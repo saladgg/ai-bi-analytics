@@ -97,7 +97,7 @@ docker-up:
 
 .PHONY: docker-down
 docker-down:
-	docker compose down
+	docker compose down -v
 
 # ----------------------------------------------------------
 # Packaging & Publishing

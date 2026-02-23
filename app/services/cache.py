@@ -1,17 +1,29 @@
 """
-In-memory caching layer for AI responses.
+Redis-backed response caching layer.
 """
 
 import hashlib
+import json
 
-from cachetools import TTLCache
+from app.core.redis_client import redis_client
 
-# 100 entries, 5-minute TTL
-query_cache = TTLCache(maxsize=100, ttl=300)
+CACHE_TTL = 300  # 5 minutes
 
 
 def generate_cache_key(question: str) -> str:
-    """
-    Generates deterministic hash key for question.
-    """
-    return hashlib.sha256(question.encode()).hexdigest()
+    return "query_cache:" + hashlib.sha256(question.encode()).hexdigest()
+
+
+def get_cached_response(key: str):
+    data = redis_client.get(key)
+    if data:
+        return json.loads(data)
+    return None
+
+
+def set_cached_response(key: str, value: dict):
+    redis_client.setex(
+        key,
+        CACHE_TTL,
+        json.dumps(value),
+    )

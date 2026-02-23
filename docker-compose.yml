@@ -1,20 +1,44 @@
 version: "3.14"
 
 services:
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: readonly_user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: analytics_db
-    ports:
-      - "5432:5432"
-
   api:
     build: .
-    depends_on:
-      - db
-    env_file:
-      - .env
+    container_name: ai_bi_api
+    command: uv run uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+    volumes:
+      - .:/app
     ports:
       - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    restart: always
+
+  postgres:
+    image: postgres:18
+    container_name: ai_bi_postgres
+    environment:
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_pwd
+      POSTGRES_DB: ai_bi_db
+    ports:
+      - "5433:5432" # ← Host 5433 → Container 5432
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    restart: always
+
+  redis:
+    image: redis:8
+    container_name: ai_bi_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+
+volumes:
+  postgres_data:
+  redis_data:
+

@@ -1,3 +1,10 @@
+"""
+
+- A starter script for creating and populating `products`
+  table with some dummy data.
+
+"""
+
 import random
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -5,12 +12,12 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, Float
 from faker import Faker
 
-# ────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 #   CONFIGURATION - CHANGE THESE VALUES
-# ────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Assumed the postres service points to port 5433 on the host
 DATABASE_URL = "postgresql+psycopg2://test_user:test_pwd@localhost:5433/ai_bi_db"
-
-# ────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 fake = Faker()
 

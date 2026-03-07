@@ -29,7 +29,8 @@ all: clean lint format fix test
 
 .PHONY: venv_setup
 venv_setup:
-	uv venv --python 3.14 && source .venv/bin/activate
+	uv venv --python 3.14 --python-preference only-managed
+	source .venv/bin/activate
 
 .PHONY: install install-dev
 
@@ -124,10 +125,14 @@ release: build publish
 
 .PHONY: clean
 clean:
-	rm -rf __pycache__
-	rm -rf .pytest_cache
-	rm -rf .ruff_cache
-	rm -rf .mypy_cache
-	rm -rf htmlcov
-	rm -rf .coverage
-	find . -type d -name "__pycache__" -exec rm -r {} +
+	# Remove all Python cache directories
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type d -name "*.pyc" -delete
+	find . -type d -name ".pytest_cache" -exec rm -rf {} +
+	find . -type d -name ".ruff_cache" -exec rm -rf {} +
+	find . -type d -name ".mypy_cache" -exec rm -rf {} +
+	find . -type d -name ".coverage" -delete
+	find . -type d -name "htmlcov" -exec rm -rf {} +
+	find . -type d -name ".tox" -exec rm -rf {} +
+	find . -type d -name ".eggs" -exec rm -rf {} +
+	find . -type d -name "*.egg-info" -exec rm -rf {} +

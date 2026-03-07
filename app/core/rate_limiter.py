@@ -1,8 +1,8 @@
 """
-Redis-backed rate limiting.
-
-Implements fixed-window rate limiting using Redis.
+Redis sliding-window rate limiter using Lua script.
 """
+
+import time
 
 from fastapi import HTTPException, Request
 
@@ -12,28 +12,31 @@ RATE_LIMIT = 5
 WINDOW_SECONDS = 60
 
 
+with open("app/core/lua/sliding_window_rate_limit.lua") as f:
+    RATE_LIMIT_SCRIPT = redis_client.register_script(f.read())
+
+
 def enforce_rate_limit(request: Request) -> None:
     """
-    Enforces rate limiting per client IP.
-
-    Args:
-        request (Request): FastAPI request object.
-
-    Raises:
-        HTTPException: If rate limit exceeded.
+    Enforces rate limit using Redis Lua script.
     """
-    client_ip = request.client.host
+
+    client_ip = request.headers.get(
+        "X-Forwarded-For",
+        request.client.host,
+    )
+
     key = f"rate_limit:{client_ip}"
 
-    current = redis_client.get(key)
+    now = int(time.time())
 
-    if current and int(current) >= RATE_LIMIT:
+    request_count = RATE_LIMIT_SCRIPT(
+        keys=[key],
+        args=[now, WINDOW_SECONDS, RATE_LIMIT],
+    )
+
+    if int(request_count) > RATE_LIMIT:
         raise HTTPException(
             status_code=429,
             detail="Rate limit exceeded",
         )
-
-    pipe = redis_client.pipeline()
-    pipe.incr(key, 1)
-    pipe.expire(key, WINDOW_SECONDS)
-    pipe.execute()

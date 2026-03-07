@@ -6,10 +6,11 @@ and exposes the application instance used by ASGI servers.
 """
 
 from fastapi import FastAPI
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from app.api.routes import query
 from app.core.config import settings
-from app.core.logging import setup_logging
+from app.core.logging_config import setup_logging
 
 
 def create_app() -> FastAPI:
@@ -31,6 +32,8 @@ def create_app() -> FastAPI:
         ),
         version="0.1.0",
     )
+
+    FastAPIInstrumentor.instrument_app(app)
 
     @app.on_event("startup")
     def startup_event():

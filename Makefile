@@ -26,6 +26,7 @@ all: clean lint format fix test
 # Dependency Management
 # ----------------------------------------------------------
 # Create ~/.netrc for private pip credentials(for uv)
+# Use `only-managed` to bypass sudo installed system python
 
 .PHONY: venv_setup
 venv_setup:

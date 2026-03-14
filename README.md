@@ -6,9 +6,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-blue)
 ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Observability-purple)
 ![Docker](https://img.shields.io/badge/Docker-Containerized-blue)
-
-A production-grade FastAPI backend enabling natural-language
-queries over PostgreSQL with safe SQL generation and explainable outputs.
+![Tests](https://img.shields.io/badge/tests-pytest-green)
 
 ---
 

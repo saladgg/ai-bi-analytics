@@ -20,8 +20,6 @@ help:
 	@echo "  make docker-build   Build Docker image"
 
 
-.PHONY: all
-all: clean lint format fix test
 
 # ----------------------------------------------------------
 # Dependency Management
@@ -29,28 +27,30 @@ all: clean lint format fix test
 # Create ~/.netrc for private pip credentials(for uv)
 # Use `only-managed` to bypass sudo installed system python
 
+VENV_PYTHON := .venv/bin/python
+
 .PHONY: venv_setup
 venv_setup:
-	uv venv --python 3.14 --python-preference only-managed
+	uv venv --python 3.14 --python-preference only-managed &
 	source .venv/bin/activate
 
-.PHONY: install install-dev install-test
+.PHONY: install install-dev install-test update
 
+# Main install (production / default dependencies)
 install:
-	uv lock --prerelease=allow
-	uv sync --active
+	uv sync
 
+# Development dependencies (main + dev group)
 install-dev:
-	uv lock --prerelease=allow
-	uv sync --group dev --active
+	uv sync --group dev
 
+# Test/CI dependencies (main + test group, no dev)
 install-test:
-	uv lock --prerelease=allow
-	uv sync --group test --active
+	uv sync --group test
 
-.PHONY: update
+# Update dependencies (upgrade versions in lockfile)
 update:
-	uv lock --upgrade --prerelease=allow
+	uv lock --upgrade
 
 # ----------------------------------------------------------
 # Linting & Formatting
@@ -96,6 +96,14 @@ run_local:
 run_prod:
 	uv run uvicorn $(APP) --host $(HOST) --port $(PORT)
 
+
+# ----------------------------------------------------------
+# Run Frontend
+# ----------------------------------------------------------
+
+.PHONY: run_frontend
+run_frontend:
+	streamlit run frontend/streamlit_app.py
 
 # ----------------------------------------------------------
 # Docker

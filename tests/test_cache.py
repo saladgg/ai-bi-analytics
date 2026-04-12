@@ -2,7 +2,7 @@
 Unit tests for caching layer.
 """
 
-from app.services.cache import generate_cache_key, get_cached_response, set_cached_response
+from ai_bi_analytics.services.cache import generate_cache_key, get_cached_response, set_cached_response
 
 
 def test_cache_key_stable():

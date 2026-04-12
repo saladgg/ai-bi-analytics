@@ -5,7 +5,7 @@ Redis-backed response caching layer.
 import hashlib
 import json
 
-from app.core.redis_client import redis_client
+from ai_bi_analytics.core.redis_client import redis_client
 
 CACHE_TTL = 300  # 5 minutes
 

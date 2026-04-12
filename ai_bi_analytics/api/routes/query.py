@@ -3,20 +3,20 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import verify_api_key
-from app.core.rate_limiter import enforce_rate_limit
-from app.db.session import get_db
-from app.schemas.query import QueryRequest, QueryResponse
-from app.services.cache import (
+from ai_bi_analytics.api.deps import verify_api_key
+from ai_bi_analytics.core.rate_limiter import enforce_rate_limit
+from ai_bi_analytics.db.session import get_db
+from ai_bi_analytics.schemas.query import QueryRequest, QueryResponse
+from ai_bi_analytics.services.cache import (
     generate_cache_key,
     get_cached_response,
     set_cached_response,
 )
-from app.services.explanation import explain_result
-from app.services.nl_to_sql import generate_sql
-from app.services.query_executor import execute_query
-from app.services.schema_loader import load_schema_metadata
-from app.services.sql_validator import validate_sql
+from ai_bi_analytics.services.explanation import explain_result
+from ai_bi_analytics.services.nl_to_sql import generate_sql
+from ai_bi_analytics.services.query_executor import execute_query
+from ai_bi_analytics.services.schema_loader import load_schema_metadata
+from ai_bi_analytics.services.sql_validator import validate_sql
 
 logger = logging.getLogger(__name__)
 

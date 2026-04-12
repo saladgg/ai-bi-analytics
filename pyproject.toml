@@ -1,9 +1,9 @@
 [build-system]
-requires = ["setuptools>=78"]
+requires = ["setuptools>=82"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-bi-backend"
+name = "ai-bi-analytics"
 version = "0.1.0"
 description = "AI-powered Business Intelligence backend built with FastAPI and PostgreSQL."
 readme = "README.md"
@@ -45,6 +45,7 @@ dependencies = [
 test = [
   "pytest>=9.0.2",
   "pytest-cov>=5.0.0",
+  "pytest-sugar~=1.1.1",
   "Faker>=40.4.0"
 ]
 dev = [
@@ -57,17 +58,17 @@ dev = [
 ]
 
 [project.urls]
-repository = "https://github.com/saladgg/ai_bi_backend"
+repository = "https://github.com/saladgg/ai-bi-analytics"
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["ai_bi_analytics"]
 
 [tool.ruff]
 include = [
-    "app/**/*.py",
+    "ai_bi_analytics/**/*.py",
     "tests/**/*.py",
 ]
-src = ["app"]
+src = ["ai_bi_analytics"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
@@ -84,7 +85,7 @@ line-ending = "auto"
 [tool.mypy]
 plugins = "pydantic.mypy"
 python_version = "3.14"
-packages = ["app"]
+packages = ["ai_bi_analytics"]
 explicit_package_bases = true
 disable_error_code = [
   "var-annotated", "import-untyped",
@@ -97,14 +98,14 @@ target-version = ["py314"]
 
 [tool.isort]
 extend_skip_glob = ["*/build/*", "*/docs/*"]
-known_first_party = ["app", "tests"]
+known_first_party = ["ai_bi_analytics", "tests"]
 line_length = 88
 multi_line_output = 3
 profile = "black"
 
 
 [tool.pytest.ini_options]
-addopts = "--cov=app --cov-report=term-missing"
+addopts = "--cov=ai_bi_analytics --cov-report=term-missing --durations=10 --cache-clear -v"
 testpaths = ["tests"]
 
 [[tool.uv.index]]

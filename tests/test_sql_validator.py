@@ -7,7 +7,7 @@ Ensures:
 """
 
 import pytest
-from app.services.sql_validator import validate_sql
+from ai_bi_analytics.services.sql_validator import validate_sql
 
 
 def test_valid_select():

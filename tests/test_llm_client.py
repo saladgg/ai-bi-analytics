@@ -1,7 +1,7 @@
 import pytest
 
-from app.core.config import settings
-from app.services.llm_client import BaseLLMClient, OpenAILLMClient, get_llm_client
+from ai_bi_analytics.core.config import settings
+from ai_bi_analytics.services.llm_client import BaseLLMClient, OpenAILLMClient, get_llm_client
 
 
 def test_base_llm_client_complete_executes_abstract_body():
@@ -56,7 +56,7 @@ def test_openai_llm_client_complete_strips_content(monkeypatch):
 
             self.chat = FakeChat()
 
-    monkeypatch.setattr("app.services.llm_client.OpenAI", FakeOpenAI)
+    monkeypatch.setattr("ai_bi_analytics.services.llm_client.OpenAI", FakeOpenAI)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 
     client = OpenAILLMClient()
@@ -70,7 +70,7 @@ def test_get_llm_client_openai_provider(monkeypatch):
             self.client = None
 
     # Avoid triggering the real OpenAILLMClient init/OpenAI call.
-    monkeypatch.setattr("app.services.llm_client.OpenAILLMClient", FakeOpenAILLMClient)
+    monkeypatch.setattr("ai_bi_analytics.services.llm_client.OpenAILLMClient", FakeOpenAILLMClient)
     monkeypatch.setattr(settings, "llm_provider", "openai")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 

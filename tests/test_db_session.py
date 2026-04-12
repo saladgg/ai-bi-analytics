@@ -1,8 +1,8 @@
-from app.db.session import get_db
+from ai_bi_analytics.db.session import get_db
 
 
 def test_get_db_yields_and_closes(monkeypatch):
-    import app.db.session as session_mod
+    import ai_bi_analytics.db.session as session_mod
 
     class DummySession:
         def __init__(self):

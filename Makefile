@@ -56,35 +56,25 @@ update:
 # Linting & Formatting
 # ----------------------------------------------------------
 
-SOURCE = app
+SOURCE = ai_bi_analytics
 
-.PHONY: lint format fix test
+.PHONY: format lint test
+
+format:
+	uv run ruff format $(SOURCE) 
+	uv run ruff check $(SOURCE) --fix 
 
 lint:
 	uv run ruff check $(SOURCE) 
 	uv run mypy $(SOURCE) 
 
-format:
-	uv run ruff format $(SOURCE) 
-
-format-check:
-	uv run ruff format --check $(SOURCE)
-
-fix:
-	uv run ruff check $(SOURCE) --fix 
-	uv run ruff format $(SOURCE) 
-
 test:
-	uv run pytest --cov=$(SOURCE) --cov-report=term-missing
-
-.PHONY: check
-check: lint format-check
-
+	uv run pytest
 
 # ----------------------------------------------------------
 # Run Application
 # ----------------------------------------------------------
-APP=app.main:app
+APP=ai_bi_analytics.main:app
 HOST=0.0.0.0
 PORT=8000
 

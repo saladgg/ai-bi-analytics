@@ -8,9 +8,9 @@ and exposes the application instance used by ASGI servers.
 from fastapi import FastAPI
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-from app.api.routes import query
-from app.core.config import settings
-from app.core.logging_config import setup_logging
+from ai_bi_analytics.api.routes import query
+from ai_bi_analytics.core.config import settings
+from ai_bi_analytics.core.logging_config import setup_logging
 
 
 def create_app() -> FastAPI:

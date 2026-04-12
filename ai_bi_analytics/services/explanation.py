@@ -5,7 +5,7 @@ Generates business-readable explanations for query results
 using LLM while grounding output in actual SQL + returned data.
 """
 
-from app.services.llm_client import get_llm_client
+from ai_bi_analytics.services.llm_client import get_llm_client
 
 
 def explain_result(question: str, sql: str, result: list[dict]) -> str:

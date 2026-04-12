@@ -15,10 +15,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.main import create_app
-from app.db.models import Base
-from app.db.session import get_db
-from app.api.deps import verify_api_key
+from ai_bi_analytics.main import create_app
+from ai_bi_analytics.db.models import Base
+from ai_bi_analytics.db.session import get_db
+from ai_bi_analytics.api.deps import verify_api_key
 
 
 
@@ -104,7 +104,7 @@ def sample_products(db_session):
     """
     Inserts sample products into test DB.
     """
-    from app.db.models import Product
+    from ai_bi_analytics.db.models import Product
 
     products = [
         Product(name="Laptop", category="Electronics", revenue=1200),
@@ -133,12 +133,12 @@ def mock_llm(monkeypatch):
     mock_llm_instance = type("MockLLM", (), {"complete": fake_complete})()
 
     monkeypatch.setattr(
-        "app.services.nl_to_sql.get_llm_client",
+        "ai_bi_analytics.services.nl_to_sql.get_llm_client",
         lambda: mock_llm_instance,
     )
 
     monkeypatch.setattr(
-        "app.services.explanation.get_llm_client",
+        "ai_bi_analytics.services.explanation.get_llm_client",
         lambda: mock_llm_instance,
     )
 
@@ -168,7 +168,7 @@ def mock_rate_limiter(monkeypatch):
         return count  
 
     monkeypatch.setattr(
-    "app.core.rate_limiter.get_rate_limit_script",
+    "ai_bi_analytics.core.rate_limiter.get_rate_limit_script",
     lambda: fake_rate_limit_script,
     )
     
@@ -195,12 +195,12 @@ def mock_redis(monkeypatch):
 
     # Patch Redis client methods actually used by cache.py
     monkeypatch.setattr(
-        "app.services.cache.redis_client.get",
+        "ai_bi_analytics.services.cache.redis_client.get",
         fake_get,
     )
 
     monkeypatch.setattr(
-        "app.services.cache.redis_client.setex",
+        "ai_bi_analytics.services.cache.redis_client.setex",
         fake_setex,
     )
 
@@ -222,11 +222,11 @@ def mock_cache(monkeypatch):
         fake_cache[key] = value
 
     monkeypatch.setattr(
-        "app.api.routes.query.get_cached_response",
+        "ai_bi_analytics.api.routes.query.get_cached_response",
         fake_get_cached_response,
     )
 
     monkeypatch.setattr(
-        "app.api.routes.query.set_cached_response",
+        "ai_bi_analytics.api.routes.query.set_cached_response",
         fake_set_cached_response,
     )

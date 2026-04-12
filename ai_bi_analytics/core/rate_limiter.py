@@ -6,14 +6,14 @@ import time
 
 from fastapi import HTTPException, Request
 
-from app.core.redis_client import redis_client
+from ai_bi_analytics.core.redis_client import redis_client
 
 RATE_LIMIT = 5
 WINDOW_SECONDS = 60
 
 
 def get_rate_limit_script():
-    with open("app/core/lua/sliding_window_rate_limit.lua") as f:
+    with open("ai_bi_analytics/core/lua/sliding_window_rate_limit.lua") as f:
         return redis_client.register_script(f.read())
 
 

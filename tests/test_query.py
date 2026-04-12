@@ -9,8 +9,8 @@ Covers:
 """
 
 from fastapi.testclient import TestClient
-from app.main import create_app
-from app.db.session import get_db
+from ai_bi_analytics.main import create_app
+from ai_bi_analytics.db.session import get_db
 
 
 def test_query_success(client, sample_products, mock_llm, mock_redis):
@@ -67,7 +67,7 @@ def test_query_invalid_sql_blocked(client, monkeypatch):
             return "DROP TABLE products;"
 
     monkeypatch.setattr(
-        "app.services.nl_to_sql.get_llm_client",
+        "ai_bi_analytics.services.nl_to_sql.get_llm_client",
         lambda: FakeLLM(),
     )
 

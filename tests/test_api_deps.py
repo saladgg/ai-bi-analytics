@@ -1,8 +1,8 @@
 import pytest
 from fastapi import HTTPException
 
-from app.api.deps import verify_api_key
-from app.core.config import settings
+from ai_bi_analytics.api.deps import verify_api_key
+from ai_bi_analytics.core.config import settings
 
 
 def test_verify_api_key_accepts_valid_key():

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 
 from openai import OpenAI
 
-from app.core.config import settings
+from ai_bi_analytics.core.config import settings
 
 
 class BaseLLMClient(ABC):

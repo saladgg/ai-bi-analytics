@@ -42,7 +42,7 @@ Thumbs.db
 .qodo
 
 # New
-ai_bi_backend.egg-info
+ai-bi-analytics.egg-info
 app/gen_test_table_data.py
 todos.md
 uv.lock

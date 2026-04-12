@@ -1,3 +1,35 @@
+Metadata-Version: 2.4
+Name: ai-bi-analytics
+Version: 0.1.0
+Summary: AI-powered Business Intelligence backend built with FastAPI and PostgreSQL.
+Author-email: Salad Guyo <saladguyo60@gmail.com>
+License: Proprietary
+Project-URL: repository, https://github.com/saladgg/ai-bi-analytics
+Classifier: Development Status :: 3 - Alpha
+Classifier: Natural Language :: English
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Requires-Python: <3.15,>=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.128.5
+Requires-Dist: uvicorn[standard]>=0.40.0
+Requires-Dist: pydantic>=2.12.5
+Requires-Dist: pydantic-settings>=2.12.0
+Requires-Dist: SQLAlchemy>=2.0.46
+Requires-Dist: psycopg2-binary>=2.9.11
+Requires-Dist: openai>=2.21.0
+Requires-Dist: python-dotenv>=1.2.1
+Requires-Dist: build>=1.4.0
+Requires-Dist: redis>=7.2.0
+Requires-Dist: opentelemetry-instrumentation-fastapi>=0.61b0
+Requires-Dist: opentelemetry-sdk>=1.40.0
+Requires-Dist: opentelemetry-exporter-otlp>=1.40.0
+Requires-Dist: streamlit==1.55.0
+Requires-Dist: pandas==2.3.3
+Requires-Dist: plotly==6.6.0
+
 # AI-Powered Business Intelligence Tool
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
@@ -287,7 +319,7 @@ ai-bi-analytics/
 ```bash
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-build
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-up
-(ai-bi-analytics) user@comp: ai-bi-analytics\λ python setup_scripts/gen_test_table_data.py # create products table with some dummy data
+(ai-bi-analytics) user@comp: ai-bi-analytics\λ python test_setup/gen_test_table_data.py # create products table with some dummy data
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-down # stop the container
 ```
 

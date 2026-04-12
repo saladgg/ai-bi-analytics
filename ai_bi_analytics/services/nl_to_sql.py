@@ -2,7 +2,7 @@
 Natural language to SQL generation service.
 """
 
-from app.services.llm_client import get_llm_client
+from ai_bi_analytics.services.llm_client import get_llm_client
 
 SQL_GENERATION_RULES = """
 You are generating SQL for a PostgreSQL database.

@@ -7,7 +7,7 @@ import importlib
 import pytest
 from fastapi import Request
 
-from app.core.rate_limiter import enforce_rate_limit
+from ai_bi_analytics.core.rate_limiter import enforce_rate_limit
 
 
 class DummyRequest:
@@ -33,7 +33,7 @@ def test_rate_limit_allows_requests(monkeypatch):
         return 0  # under limit
 
     monkeypatch.setattr(
-        "app.core.rate_limiter.redis_client.eval",
+        "ai_bi_analytics.core.rate_limiter.redis_client.eval",
         fake_redis_eval,
     )
 
@@ -59,7 +59,7 @@ def test_rate_limit_blocks():
 def test_get_rate_limit_script_registers_lua(monkeypatch):
     # The autouse fixture in tests/conftest.py replaces `get_rate_limit_script`.
     # Reloading ensures we execute the real implementation for coverage.
-    import app.core.rate_limiter as rate_limiter
+    import ai_bi_analytics.core.rate_limiter as rate_limiter
 
     rate_limiter = importlib.reload(rate_limiter)
 

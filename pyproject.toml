@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-bi-analytics"
-version = "0.1.0"
+version = "0.1.1"
 description = "AI-powered Business Intelligence backend built with FastAPI and PostgreSQL."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -22,6 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
 ]
+
 dependencies = [
   "fastapi>=0.128.5",
   "uvicorn[standard]>=0.40.0",
@@ -58,7 +59,11 @@ dev = [
 ]
 
 [project.urls]
-repository = "https://github.com/saladgg/ai-bi-analytics"
+Homepage = "https://github.com/saladgg/ai-bi-analytics" # todo
+Repository = "https://github.com/saladgg/ai-bi-analytics"
+Documentation = "https://github.com/saladgg/ai-bi-analytics/docs" # todo
+Changelog = "https://github.com/saladgg/ai-bi-analytics/releases"
+
 
 [tool.setuptools]
 packages = ["ai_bi_analytics"]
@@ -111,3 +116,25 @@ testpaths = ["tests"]
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"
+
+
+[tool.semantic_release]
+commit_parser = "conventional"
+version_toml = [
+    "pyproject.toml:project.version:tf"
+]
+branch = "main"
+build_command = "python -m build"
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = true
+dist_glob_patterns = ["dist/*"]
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+mask_initial_release = false # Override default behavior of suppressing detailed changelog on first version
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "docs", "chore", "build", "ci", "test", "style"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf", "refactor"]   # refactor is often patch, but some teams treat it as minor

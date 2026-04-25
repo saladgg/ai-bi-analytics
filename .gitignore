@@ -16,8 +16,6 @@ env/
 .coverage
 coverage.xml
 htmlcov/
-build/
-dist/
 
 # Poetry
 .poetry/
@@ -41,8 +39,12 @@ docker-compose.override.yml
 Thumbs.db
 .qodo
 
+# Packaging
+build/
+dist/
+*.egg-info/
+
 # New
-ai-bi-analytics.egg-info
 app/gen_test_table_data.py
 todos.md
 uv.lock

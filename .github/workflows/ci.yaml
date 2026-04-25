@@ -26,4 +26,7 @@ jobs:
         run: make lint
 
       - name: Test
+        env:
+          API_KEY: test-api-key
+          DATABASE_URL: sqlite:///./test.db
         run: make test

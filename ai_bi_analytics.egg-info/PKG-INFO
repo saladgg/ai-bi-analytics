@@ -1,10 +1,13 @@
 Metadata-Version: 2.4
 Name: ai-bi-analytics
-Version: 0.1.0
+Version: 0.1.1
 Summary: AI-powered Business Intelligence backend built with FastAPI and PostgreSQL.
 Author-email: Salad Guyo <saladguyo60@gmail.com>
 License: Proprietary
-Project-URL: repository, https://github.com/saladgg/ai-bi-analytics
+Project-URL: Homepage, https://github.com/saladgg/ai-bi-analytics
+Project-URL: Repository, https://github.com/saladgg/ai-bi-analytics
+Project-URL: Documentation, https://github.com/saladgg/ai-bi-analytics/docs
+Project-URL: Changelog, https://github.com/saladgg/ai-bi-analytics/releases
 Classifier: Development Status :: 3 - Alpha
 Classifier: Natural Language :: English
 Classifier: Intended Audience :: Developers
@@ -319,7 +322,7 @@ ai-bi-analytics/
 ```bash
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-build
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-up
-(ai-bi-analytics) user@comp: ai-bi-analytics\λ python test_setup/gen_test_table_data.py # create products table with some dummy data
+(ai-bi-analytics) user@comp: ai-bi-analytics\λ python setup_scripts/gen_test_table_data.py # create products table with some dummy data
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-down # stop the container
 ```
 

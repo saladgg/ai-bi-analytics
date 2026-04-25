@@ -2,61 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
+    branches: [main]
 
 jobs:
-  quality:
+  lint-test:
+    name: Lint & Test
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
-      - run: pip install uv
-      - run: make install-dev
-      - run: make check
-      
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      API_KEY: test-api-key
-      DATABASE_URL: sqlite:///test.db
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.14"
+          enable-cache: true
 
-      - run: pip install uv
-      - run: make install-test
-      - run: make test
+      - name: Install dev dependencies
+        run: make install-dev
 
-      # Keep the README "Tests" badge in sync with the actual coverage result.
-      # Only commits on real `push` events to avoid PR churn.
-      - name: Update README coverage badge
-        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
-        run: uv run python setup_scripts/update_readme_coverage_badge.py
+      - name: Format check
+        run: make format
 
-      - name: Commit and push README badge update
-        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
-        run: |
-          if git diff --quiet -- README.md; then
-            echo "README badge already up to date."
-            exit 0
-          fi
+      - name: Lint
+        run: make lint
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "chore: update test coverage badge"
-          git push
-
-
-
+      - name: Test
+        run: make test

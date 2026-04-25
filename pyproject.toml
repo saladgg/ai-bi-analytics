@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-bi-analytics"
-version = "0.1.1"
+version = "v1.0.0"
 description = "AI-powered Business Intelligence backend built with FastAPI and PostgreSQL."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"

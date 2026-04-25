@@ -261,8 +261,9 @@ ai-bi-analytics/
 │       ├── logging.py
 │       └── tracing.py
 │
-├── test_setup/
-│   └── gen_test_table_data.py  # Generates sample products table
+├── example/                    # Quick-start DB setup and seed scripts
+│   ├── db_user_setup.py        # Provisions Postgres role + database (host Postgres)
+│   └── gen_test_table_data.py  # Creates and populates sample products table
 │
 ├── tests/                      # Unit and integration tests
 │
@@ -287,7 +288,7 @@ ai-bi-analytics/
 ```bash
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-build
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-up
-(ai-bi-analytics) user@comp: ai-bi-analytics\λ python setup_scripts/gen_test_table_data.py # create products table with some dummy data
+(ai-bi-analytics) user@comp: ai-bi-analytics\λ python example/gen_test_table_data.py # create products table with some dummy data
 (ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-down # stop the container
 ```
 
@@ -304,7 +305,7 @@ user@comp: ai-bi-analytics~$ source .venv/bin/activate # activate the venv
 (ai-bi-analytics) user@comp: ai-bi-analytics~$ make install-dev
 (ai-bi-analytics) user@comp: ai-bi-analytics~$ make all # clean lint format fix test
 (ai-bi-analytics) user@comp: ai-bi-analytics~$ make run_local # start the API
-(ai-bi-analytics) user@comp: ai-bi-analytics~$ python setup_scripts/gen_test_table_data.py # to create products table with some dummy data
+(ai-bi-analytics) user@comp: ai-bi-analytics~$ python example/gen_test_table_data.py # to create products table with some dummy data
 ```
 
 ---

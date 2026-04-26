@@ -6,347 +6,296 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-blue)
 ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Observability-purple)
 ![Docker](https://img.shields.io/badge/Docker-Containerized-blue)
-![Tests](https://img.shields.io/badge/tests-pytest-100%25-coverage-green)
+[![Coverage Status](https://coveralls.io/repos/github/saladgg/ai-bi-analytics/badge.svg)](https://coveralls.io/github/saladgg/ai-bi-analytics)
 
-
----
-
-# Overview
-
-A production-grade FastAPI tool enabling **natural-language queries over PostgreSQL** with safe SQL generation and explainable outputs.
-
-This project demonstrates how to design **AI-powered systems safely and reliably**, combining modern LLM capabilities with strict backend guardrails.
+A production-grade FastAPI service that turns **natural-language questions into safe, explainable SQL** over PostgreSQL — with strict guardrails, distributed rate limiting, Redis caching, and OpenTelemetry tracing.
 
 ---
 
-# Problem
+## Table of Contents
 
-Business users often need insights from relational databases but cannot write SQL.
-
-Naive LLM integrations introduce serious risks:
-
-- SQL injection
-- Destructive queries
-- Hallucinated outputs
-- Lack of observability
-- Uncontrolled API usage
-
----
-
-# Solution
-
-This tool implements a **safe AI query pipeline**:
-
-- Converts natural language → SQL
-- Enforces strict SQL safety validation
-- Executes queries using read-only database access
-- Generates grounded explanations
-- Applies distributed rate limiting
-- Uses Redis caching to reduce LLM calls
-- Provides observability via structured logging and tracing
+- [Why this exists](#why-this-exists)
+- [How it works](#how-it-works)
+- [Features](#features)
+- [Tech stack](#tech-stack)
+- [Project layout](#project-layout)
+- [Getting started](#getting-started)
+- [API usage](#api-usage)
+- [Development workflow](#development-workflow)
+- [Releases](#releases)
+- [Roadmap](#roadmap)
 
 ---
 
-# Architecture
+## Why this exists
 
-``` 
+Business users routinely need answers from relational data, but cannot write SQL. Wiring an LLM directly to a database naively introduces real risks:
 
-  +-------------------+
-  |      Client       |
-  +---------+---------+
-            |
-            v
-  +-------------------+
-  |      FastAPI      |
-  |      API Layer    |
-  +---------+---------+
-            |
-            v
-  +-------------------+
-  |  NL → SQL Service |
-  | (LLM Abstraction) |
-  +---------+---------+
-            |
-            v
-  +-------------------+
-  |  SQL Validator    |
-  |  (Read-Only Safe) |
-  +---------+---------+
-            |
-            v
-  +-------------------+
-  |    PostgreSQL     |
-  |     Database      |
-  +---------+---------+
-            |
-            v
-  +-------------------+
-  | Explanation Layer |
-  +-------------------+
+- SQL injection and destructive statements
+- Hallucinated columns, tables, or values
+- Unbounded LLM spend
+- No way to trace, debug, or audit what ran
 
-Supporting Systems
-──────────────────────────
-**Redis** -> (Caching + Rate Limiting)
-**OpenTelemetry** -> Tracing
-**Structured Logging** -> Observability
+This project demonstrates how to ship that capability **safely**: an LLM-backed pipeline wrapped in validation, read-only execution, caching, rate limiting, and observability.
 
+---
+
+## How it works
+
+```
+        ┌──────────────┐
+        │    Client    │
+        └──────┬───────┘
+               │  POST /api/query  (x-api-key)
+               ▼
+        ┌──────────────┐    ┌──────────────────────────┐
+        │   FastAPI    │───▶│ Rate limiter (Redis Lua)│
+        └──────┬───────┘    └──────────────────────────┘
+               │
+               ▼
+        ┌──────────────┐    ┌──────────────────────────┐
+        │ Cache lookup │───▶│ Hit → return cached JSON│
+        └──────┬───────┘    └──────────────────────────┘
+               │ miss
+               ▼
+        ┌──────────────────────┐
+        │ Schema introspection │  (SQLAlchemy reflect)
+        └──────────┬───────────┘
+                   ▼
+        ┌──────────────────────┐
+        │   NL → SQL  (LLM)    │
+        └──────────┬───────────┘
+                   ▼
+        ┌──────────────────────┐
+        │   SQL validator      │  SELECT-only, single statement
+        └──────────┬───────────┘
+                   ▼
+        ┌──────────────────────┐
+        │   PostgreSQL exec    │  read-only role
+        └──────────┬───────────┘
+                   ▼
+        ┌──────────────────────┐
+        │ Explanation  (LLM)   │
+        └──────────┬───────────┘
+                   ▼
+        ┌──────────────────────┐
+        │ Cache write + return │
+        └──────────────────────┘
+
+Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
 ```
 
 ---
 
-# Key Features
+## Features
 
-### Natural Language to SQL
-Transforms user questions into executable SQL queries using an LLM abstraction layer.
+### NL → SQL with strict guardrails
+The validator rejects anything that isn't a single `SELECT`. `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, multi-statement payloads, and comments-as-injection are all blocked before the query reaches the database. The DB user itself should also be read-only (see [`.env.example`](.env.example) — `readonly_user`).
 
-**Example:**
+### Dynamic schema introspection
+Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No hard-coded schema strings means no schema drift between code and prompts.
 
-"What are the top 3 products by revenue?"
+### Redis distributed cache
+Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
 
+### Sliding-window rate limiting
+Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-increment is atomic across replicas. Default policy: 5 requests per minute per client.
 
----
+### Observability
+- **Structured logging** — request lifecycle, cache hit/miss, SQL, row counts, errors.
+- **OpenTelemetry tracing** — FastAPI auto-instrumentation; spans cover the API, Redis, and DB calls so a single `trace_id` follows a request end-to-end.
 
-# SQL Safety Guardrails
+### API-key auth
+Static `x-api-key` header validated by [`ai_bi_analytics/api/deps.py`](ai_bi_analytics/api/deps.py). Suitable for internal/service-to-service use; swap in OAuth/JWT for end-user auth.
 
-The system enforces strict rules:
-
-- Only `SELECT` queries allowed
-- No `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`
-- Single statement enforcement
-- SQL validation layer before execution
-
-This prevents destructive queries.
-
----
-
-# Redis Distributed Caching
-
-The backend caches query results using Redis:
-
-- prevents repeated LLM calls
-- improves latency
-- reduces infrastructure cost
-
-Cache TTL: **5 minutes**
+### Streamlit frontend (demo)
+A minimal Streamlit UI ships under [`frontend/`](frontend/) for exploring the API without writing curl commands. **Demo only** — see [frontend/README.md](frontend/README.md) for limitations.
 
 ---
 
-# Redis Sliding Window Rate Limiting
+## Tech stack
 
-The API enforces request quotas using **Redis Lua scripts**.
-
-Features:
-
-- distributed rate limiting
-- sliding window algorithm
-- atomic execution
-- high concurrency safety
-
-Example policy:
-
-`5 requests per minute per client`
-
----
-
-# Dynamic Schema Introspection
-
-The system dynamically extracts database schema using SQLAlchemy.
-
-This allows the LLM to generate accurate SQL without hardcoded schema descriptions.
-
-Benefits:
-
-- prevents schema drift
-- improves query accuracy
+| Layer                  | Technology                                           |
+|------------------------|------------------------------------------------------|
+| API framework          | FastAPI + Uvicorn                                    |
+| Database               | PostgreSQL 18 (via SQLAlchemy 2.x)                   |
+| Cache & rate limiting  | Redis 8 (Lua-scripted sliding window)                |
+| LLM provider           | OpenAI (abstracted behind `services/llm_client.py`)  |
+| Observability          | OpenTelemetry (FastAPI instrumentation)              |
+| Frontend (demo)        | Streamlit + pandas + Plotly                          |
+| Containerization       | Docker + docker-compose                              |
+| Python tooling         | uv, ruff, mypy, pytest, pre-commit                   |
+| Release automation     | python-semantic-release (Conventional Commits)       |
 
 ---
 
-# Observability
-
-The service includes **production-grade observability**.
-
-### Structured Logging
-
-Logs include:
-
-- request lifecycle
-- cache hits/misses
-- SQL execution
-- error tracing
-
-Example log:
-
-`[INFO] Query executed rows=3 latency_ms=41`
-
-
----
-
-### Distributed Tracing
-
-Using **OpenTelemetry instrumentation for FastAPI**.
-
-Each request includes:
-
-- `trace_id`
-- `span_id`
-
-
-This enables tracing across:
-
-- API calls
-- Redis
-- database queries
-
----
-
-# Key Engineering Decisions
-
-- LLM abstraction layer
-- Explicit SQL safety validation
-- Redis-based distributed caching
-- Lua-based sliding window rate limiter
-- Dynamic database schema introspection
-- Structured logging
-- OpenTelemetry tracing
-- Dependency injection for testability
-- Dockerized infrastructure
-
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|------|-------------|
-| API Framework | FastAPI |
-| Database | PostgreSQL |
-| Cache / Rate Limiting | Redis |
-| LLM Integration | OpenAI (abstracted provider layer) |
-| Observability | OpenTelemetry |
-| Containerization | Docker |
-| Task Automation | Makefile |
-| Python Environment | uv |
-
----
-
-
-# Project Structure
-
-## Project Structure
+## Project layout
 
 ```
 ai-bi-analytics/
+├── ai_bi_analytics/              # Application package
+│   ├── api/
+│   │   ├── deps.py               # API-key auth dependency
+│   │   └── routes/query.py       # POST /api/query
+│   ├── core/
+│   │   ├── config.py             # Pydantic settings
+│   │   ├── logging_config.py
+│   │   ├── rate_limiter.py       # Redis sliding-window limiter
+│   │   ├── redis_client.py
+│   │   ├── security.py
+│   │   └── lua/sliding_window_rate_limit.lua
+│   ├── db/
+│   │   ├── models.py
+│   │   └── session.py            # SQLAlchemy session factory
+│   ├── schemas/query.py          # Request/response models
+│   ├── services/
+│   │   ├── cache.py              # Redis response cache
+│   │   ├── explanation.py        # LLM explanation step
+│   │   ├── llm_client.py         # Provider abstraction
+│   │   ├── nl_to_sql.py          # NL → SQL generation
+│   │   ├── query_executor.py     # Read-only execution
+│   │   ├── schema_loader.py      # Schema introspection
+│   │   └── sql_validator.py      # SELECT-only guardrail
+│   └── main.py                   # FastAPI app factory
 │
-├── app/
-│   ├── api/                    # FastAPI route definitions
-│   │   └── query_routes.py
-│   │
-│   ├── services/               # Core business logic
-│   │   ├── nl_to_sql.py
-│   │   ├── explanation_service.py
-│   │   └── query_executor.py
-│   │
-│   ├── validators/             # SQL safety validation
-│   │   └── sql_validator.py
-│   │
-│   ├── db/                     # Database access layer
-│   │   ├── database.py
-│   │   └── schema_introspection.py
-│   │
-│   ├── core/                   # Shared configs and utilities
-│   │   ├── config.py
-│   │   └── dependencies.py
-│   │
-│   └── observability/          # Logging and telemetry
-│       ├── logging.py
-│       └── tracing.py
+├── frontend/                     # Streamlit demo UI
+├── example/                      # DB user/data bootstrap scripts
+├── tests/                        # pytest suite
 │
-├── example/                    # Quick-start DB setup and seed scripts
-│   ├── db_user_setup.py        # Provisions Postgres role + database (host Postgres)
-│   └── gen_test_table_data.py  # Creates and populates sample products table
-│
-├── tests/                      # Unit and integration tests
-│
-├── Dockerfile                  # Container definition
-├── docker-compose.yml          # Local multi-service setup
-├── Makefile                    # Developer workflow commands
-├── pyproject.toml              # Python project configuration
-├── .env.example                # Environment configuration template
-└── README.md                   # Project documentation
+├── Dockerfile
+├── docker-compose.yml            # api + postgres + redis
+├── Makefile                      # uv-based developer commands
+├── pyproject.toml
+├── .env.example
+├── CHANGELOG.md                  # Generated by semantic-release
+└── README.md
 ```
 
 ---
-## Starting the app
 
-- First create your environment configuration.
-- Create `.env` file based on `.env.example` at the root of the project.
-- Update the variables according to your needs.
-- Next you can either run the app the docker way or directly from the repo.
+## Getting started
 
-### Option 1 — Run with Docker
+### Prerequisites
 
-```bash
-(ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-build
-(ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-up
-(ai-bi-analytics) user@comp: ai-bi-analytics\λ python example/gen_test_table_data.py # create products table with some dummy data
-(ai-bi-analytics) user@comp: ai-bi-analytics\λ make docker-down # stop the container
-```
+- Python **3.12 – 3.14**
+- [`uv`](https://github.com/astral-sh/uv) for environment management
+- Docker + Docker Compose (for the easy path)
+- An OpenAI API key
 
-### Option 2 — Run Locally (Recommended for Development)
+### 1. Configure environment
 
+Copy [`.env.example`](.env.example) to `.env` and fill it in:
 
 ```bash
-
-curl -LsSf https://astral.sh/uv/install.sh | sh # install uv globally
-user@comp: ai-bi-analytics~$ # clone and navigate to the project directory
-user@comp: ai-bi-analytics~$ make venv_setup # create venv
-user@comp: ai-bi-analytics~$ source .venv/bin/activate # activate the venv
-(ai-bi-analytics) user@comp: ai-bi-analytics~$ make help # show available make commands
-(ai-bi-analytics) user@comp: ai-bi-analytics~$ make install-dev
-(ai-bi-analytics) user@comp: ai-bi-analytics~$ make all # clean lint format fix test
-(ai-bi-analytics) user@comp: ai-bi-analytics~$ make run_local # start the API
-(ai-bi-analytics) user@comp: ai-bi-analytics~$ python example/gen_test_table_data.py # to create products table with some dummy data
+cp .env.example .env
+# then edit .env: API_KEY, DATABASE_URL, OPENAI_API_KEY, ...
 ```
+
+### Option A — Docker (recommended)
+
+Brings up `api`, `postgres`, and `redis` in one command.
+
+```bash
+make docker-build
+make docker-up
+
+# In another shell, seed sample data
+python example/gen_test_table_data.py
+
+make docker-down   # tear down (also removes named volumes)
+```
+
+The dockerized Postgres listens on host port **5433** (mapped to container 5432). See [example/README.md](example/README.md) for details on connecting and seeding.
+
+### Option B — Run locally
+
+```bash
+# Install uv (one-time)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Set up venv + dev dependencies
+make venv_setup
+source .venv/bin/activate
+make install-dev
+
+# Start a Postgres + Redis somewhere reachable, then:
+make run_local        # uvicorn with --reload on :8000
+
+# Optional — seed sample data and launch the demo UI
+python example/gen_test_table_data.py
+make run_frontend     # Streamlit on :8501
+```
+
+Run `make help` for the full target list.
 
 ---
-## API Usage
 
-- Once the service is running, you can send requests to the API.
-- Authentication requires an API key.
+## API usage
+
+All endpoints require a static `x-api-key` header that matches `API_KEY` in `.env`.
+
+### Health
 
 ```
-Header:
-x-api-key: YOUR_API_KEY
+GET /api/health  →  {"status": "ok"}
 ```
 
-**Sample Request:**
+### Query
 
-```json
-POST {{baseUrl}}/api/query/
+```http
+POST /api/query
+Content-Type: application/json
+x-api-key: <your key>
 
 {
   "question": "What are the top 3 products by revenue?"
 }
 ```
 
-**Sample Response:**
+Response:
+
 ```json
 {
   "sql": "SELECT product_name, SUM(revenue) AS total_revenue FROM products GROUP BY product_name ORDER BY total_revenue DESC LIMIT 3;",
   "result": [
-    {
-      "product_name": "Product A",
-      "total_revenue": 125000
-    },
-    {
-      "product_name": "Product B",
-      "total_revenue": 98000
-    },
-    {
-      "product_name": "Product C",
-      "total_revenue": 87000
-    }
+    {"product_name": "Product A", "total_revenue": 125000},
+    {"product_name": "Product B", "total_revenue":  98000},
+    {"product_name": "Product C", "total_revenue":  87000}
   ],
   "explanation": "The top three products by revenue are Product A, Product B, and Product C based on the total sales recorded in the database."
 }
 ```
+
+Interactive docs are served at `/docs` (Swagger) and `/redoc` once the API is running.
+
+---
+
+## Development workflow
+
+```bash
+make format      # ruff format + ruff --fix
+make lint        # ruff check + mypy
+make test        # pytest with coverage
+make clean       # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
+```
+
+Tests live under [`tests/`](tests/) and run against a SQLite test DB plus mocked Redis/LLM. Coverage is reported to Coveralls (see badge).
+
+Pre-commit hooks are configured in `.pre-commit-config.yaml`; install once with `pre-commit install`.
+
+---
+
+## Releases
+
+Versioning and changelog are automated via [python-semantic-release](https://python-semantic-release.readthedocs.io/) using **Conventional Commits**. Tag-allowlist and bump rules live under `[tool.semantic_release]` in [`pyproject.toml`](pyproject.toml):
+
+| Commit type                  | Version bump |
+|------------------------------|--------------|
+| `feat:`                      | minor        |
+| `fix:`, `perf:`, `refactor:` | patch        |
+| `BREAKING CHANGE:` footer    | major        |
+| `docs:`, `chore:`, `ci:`, `test:`, `style:`, `build:` | none |
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the generated history.
+
+---

@@ -6,7 +6,7 @@ Ensures centralized configuration management.
 """
 
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -33,9 +33,7 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
 
 settings = Settings()

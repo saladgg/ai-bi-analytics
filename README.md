@@ -327,15 +327,18 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc` once the API is ru
 ## Development workflow
 
 ```bash
-make format      # ruff format + ruff --fix
-make lint        # ruff check + mypy
-make test        # pytest with coverage
-make clean       # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
+make format        # ruff format + ruff --fix (package, tests, frontend, example)
+make format-check  # the same, check-only (what CI runs)
+make lint          # ruff check (incl. bandit-style S rules) + mypy
+make test          # pytest; fails below 100% line + branch coverage
+make audit         # pip-audit: known vulnerabilities in locked dependencies
+make api-key CLIENT=<id>   # generate a client key and its API_KEYS entry
+make clean         # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
 ```
 
-Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`. The Coveralls upload isn't wired into CI yet (CI-1).
+Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`.
 
-The integration suite in [`tests/integration/`](tests/integration/) checks the read-only guarantees against a real PostgreSQL. It is skipped unless both URLs are set, e.g. against the compose Postgres:
+The integration suite in [`tests/integration/`](tests/integration/) runs against a real PostgreSQL. It covers read-only enforcement, timeouts, the guard's canonical SQL, the query scope on a dedicated schema, column privileges and the row cap. CI runs it on every PR. Locally it is skipped unless both URLs are set, e.g. against the compose Postgres:
 
 ```bash
 TEST_POSTGRES_OWNER_URL=postgresql+psycopg2://test_user:test_pwd@localhost:5433/ai_bi_db \
@@ -358,11 +361,17 @@ Versioning and changelog are automated via [python-semantic-release](https://pyt
 
 Releases are fully automated and gated on CI:
 
-1. A PR runs CI (format check, lint + mypy, tests at 100% coverage, wheel smoke test).
+1. A PR runs CI ([`ci.yaml`](.github/workflows/ci.yaml), every action SHA-pinned):
+   - format check, lint and mypy across the repo
+   - dependency audit
+   - tests at 100% line and branch coverage, including the Postgres integration suite
+   - wheel smoke test
+   - Docker image build with a Trivy scan (fixable CRITICAL/HIGH CVEs fail the build)
+   - gitleaks secret scan over the full history
 2. On merge, CI runs again on `main`.
 3. Only if that run succeeds does [`release.yaml`](.github/workflows/release.yaml) run semantic-release, on the exact commit CI validated. It bumps the version, re-locks `uv.lock`, updates the changelog, tags, and publishes a GitHub release with the wheel and sdist attached.
 
-Releases are serialized, so two quick merges can't collide. A red build is never released.
+Releases are serialized, so two quick merges can't collide. A red build is never released. Dependabot opens weekly update PRs for Python packages, GitHub Actions and the Docker base image, and they go through the same gates.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the generated history.
 
@@ -370,7 +379,12 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the generated history.
 
 ## Roadmap
 
-Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings paired with phased checklists. The current backlog, [`01_general_audit_todos.md`](docs/todos/01_general_audit_todos.md), has Phase 0 (SQL guard, read-only database, rate limiting, build and packaging) shipped. Next up: typed errors without leakage, bounded result sets, table allowlists, stronger API-key auth, and CI gates (Phase 1), then observability and container hardening (Phase 2).
+Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings paired with phased checklists. The current backlog, [`01_general_audit_todos.md`](docs/todos/01_general_audit_todos.md), has shipped:
+
+- **Phase 0:** SQL guard, read-only database, rate limiting, build and packaging.
+- **Phase 1:** typed errors, bounded results, prompt separation, allowlisted query scope, per-client API keys, and full CI gates.
+
+Next up is Phase 2: OpenTelemetry export and metrics, readiness checks, the rest of the container hardening, and cache resilience.
 
 ---
 

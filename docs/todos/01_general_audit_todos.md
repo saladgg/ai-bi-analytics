@@ -5,28 +5,19 @@ IDs match that file; evidence, file:line references and rationale live
 there. Ship order is phase order. Items within a phase are independent
 unless a dependency is noted.
 
-> **Status (2026-11-26):** **Phase 0 shipped** on
-> `fix/phase0-security-build-hardening` (one commit per finding: OPS-1 +
-> PKG-1, SEC-2, SEC-3, SEC-1 + CQ-1). Every fix was re-verified against
-> the real component, not just the unit suite:
-> - the audit's validator probe now rejects every bypass and accepts
->   every false positive;
-> - 20 burst requests against `redis-server` give 5 allowed and 15
->   blocked, with spoofed `X-Forwarded-For` ignored;
-> - the new Postgres 18 integration suite (15 tests) passes, refusing
->   writes, a smuggled `COMMIT`, writable CTEs, `GRANT`, `pg_read_file`
->   and a `pg_sleep` past the timeout;
-> - a clean clone builds in Docker with a canary `.env` absent from the
->   image;
-> - the wheel installs and imports from a fresh venv.
+> **Status (2026-11-26):** **Phases 0 and 1 shipped.** Phase 0 (SQL guard,
+> read-only database, rate limiter, build and packaging) was released as
+> v1.0.1 through the CI-gated pipeline. Phase 1 (typed errors, bounded
+> results, prompt separation, query scope, per-client API keys, and CI
+> that lints the whole repo, audits dependencies, scans the image and
+> secrets, and runs the Postgres integration suite) is on
+> `fix/phase1-request-path-and-ci`; its `feat(auth)` commit makes the next
+> release a minor one. pip-audit and Trivy are clean.
 >
-> Suite: 131 passed + 15 integration (skipped unless `TEST_POSTGRES_*_URL`
-> are set), 100% line coverage. **Still open from Phase 0:** the release
-> decision on the broken v1.0.0 assets (PKG-1) and keying the limiter on
-> client identity (needs SEC-8). The integration suite isn't wired into
-> CI yet; that is TEST-1 in Phase 1.
-> Phases 1–3 are next. Phases 4–5 are product-shaped and need a scope
-> decision before anyone builds them.
+> **Open decisions:** the broken v1.0.0 release assets (PKG-1), enabling
+> Coveralls, and bumping uv in both repos (OPS-4). **Next:** Phase 2
+> (OPS-2 observability, OPS-3 health and lifecycle, the rest of OPS-4,
+> PERF-3).
 
 ---
 
@@ -88,7 +79,7 @@ unless a dependency is noted.
     gone. Uvicorn's proxy-header handling is on by default and trusts
     `FORWARDED_ALLOW_IPS` (documented in `.env.example`), so no
     Dockerfile change was needed.
-  - [ ] Key on the client id. Blocked on SEC-8 (Phase 1).
+  - [x] Key on the client id. Shipped with SEC-8 in Phase 1.
   - [x] `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` settings. The
     Lua script loads via `importlib.resources` (fixes ARCH-4's CWD
     dependency).
@@ -111,67 +102,103 @@ unless a dependency is noted.
     release assets. Merging this branch's `fix:` commits will cut v1.0.1
     with a working wheel.
 
-## Phase 1 — Harden the request path and make CI a real gate 🟠
+## Phase 1 — Harden the request path and make CI a real gate 🟠 ✅
 
-- [ ] **SEC-4 — Typed errors, no leakage.** An exception hierarchy in
-  `ai_bi_analytics/core/errors.py` (`UnsafeSQLError` 422,
-  `LLMUnavailableError` 502/503, `QueryTimeoutError` 504, a fallback 500)
-  with handlers registered in `create_app`; `logger.exception` with a
-  request id; the response body has a generic message plus the request id.
-  Delete the blanket `except Exception` in the route.
-- [ ] **SEC-5 — Bound every query.** `LIMIT :max_rows + 1` wrapper,
-  `fetchmany`, `truncated`/`row_count` on `QueryResponse`, a bounded
-  sample for the explanation prompt, no caching above `CACHE_MAX_BYTES`.
-  Timeouts come from SEC-2.
-- [ ] **SEC-6 — Prompt input bounds.**
-  `question: str = Field(min_length=3, max_length=<cfg, default 500>)`;
-  strip control characters; system/user message split; delimited
-  untrusted blocks for the question and result data.
-- [ ] **SEC-7 — Table/schema allowlist.** `QUERYABLE_SCHEMAS`,
-  `QUERYABLE_TABLES` and `REDACTED_COLUMNS` in Settings, used by
-  `schema_loader` *and* the SEC-1 guard; fail closed in non-dev if
-  `QUERYABLE_TABLES` is unset.
-- [ ] **SEC-8 — API-key auth.**
-  - [ ] `APIKeyHeader(name="x-api-key", auto_error=False)`; missing or
-    invalid → 401 (pin the test).
-  - [ ] `API_KEYS` as `client_id:sha256` pairs; `hmac.compare_digest`
-    lookup; return a `Principal(client_id)` dependency used by the rate
-    limiter and logs.
-  - [ ] Startup validation outside dev: ≥ 32 chars, not `change-me`.
-  - [ ] Remove `print("API KEY:", …)` from `frontend/api.py`.
-- [ ] **CI-1 — CI gates.** (partly shipped with Phase 0 — *ci: gate
-  releases on green CI and enforce 100% coverage*)
+Shipped on `fix/phase1-request-path-and-ci` (one commit per item; commit
+subjects in *italics*). The full suite is 287 tests, 18 of them against
+Postgres 18, at 100% line and branch coverage.
+
+- [x] **SEC-4 — Typed errors, no leakage.** *fix(security): return typed,
+  client-safe errors with request ids*
+  - [x] `core/errors.py`: `AppError` with status, a stable `code` and a
+    client-safe message: `UnsafeSQLError` 422, `QueryExecutionError` 422
+    (*added*: safe SQL that fails, e.g. a hallucinated column),
+    `QueryTimeoutError` 504, `LLMUnavailableError` 502,
+    `DependencyUnavailableError` 503.
+  - [x] `db/errors.py` maps driver errors by Postgres SQLSTATE (57014,
+    25006/42501, 08/53/57P, code-less psycopg2 connection failures).
+    Handlers for `AppError`, `DBAPIError` and `RedisError` return
+    `{detail, code, request_id}`; the route's blanket `except` is gone.
+  - [x] *Added*: `RequestIdMiddleware` (pure ASGI, outermost) accepts a
+    safe `X-Request-ID` or generates one, echoes it, puts it on every log
+    line, and turns unhandled exceptions into a JSON 500 carrying it.
+    This pulls the request-id part of OPS-2 forward.
+- [x] **SEC-5 — Bound every query.** *fix(security): bound result sets,
+  explanation input and cached responses*
+  - [x] *Deviation:* instead of wrapping the SQL in a subquery, the guard
+    rewrites the outermost `LIMIT` (handling `FETCH FIRST`, `LIMIT ALL`
+    and expressions, keeping `OFFSET`) to `MAX_RESULT_ROWS + 1` unless the
+    query asks for fewer, so ordering semantics are untouched. The
+    executor's `fetchmany(cap + 1)` is the second bound.
+  - [x] `QueryResult(rows, truncated)`; `row_count`/`truncated` on the
+    response; `EXPLANATION_SAMPLE_ROWS` sample plus a row-count line in
+    the prompt; `CACHE_MAX_BYTES`.
+- [x] **SEC-6 — Prompt input bounds.** *fix(security): bound questions and
+  separate prompt rules from untrusted text*
+  - [x] A validator (not `Field` limits, so `MAX_QUESTION_LENGTH` is
+    configurable) strips control chars and enforces 3..limit.
+    `complete(prompt, system=)`; rules in the system message;
+    `untrusted_block` tags the question, schema, SQL and rows, and removes
+    any copy of the tag so the block can't be closed early.
+- [x] **SEC-7 — Table/schema allowlist.** *fix(security): scope the LLM and
+  the SQL guard to an explicit allowlist*
+  - [x] *Deviation:* one `QUERYABLE_SCHEMA` (also the connection
+    `search_path`), not `QUERYABLE_SCHEMAS`. A dedicated analytics schema
+    covers the stated use case without multi-schema name resolution.
+  - [x] `QUERYABLE_TABLES` (views included); the app refuses to start
+    without it outside dev. `REDACTED_COLUMNS` (`table.column` or bare
+    `column`). One `QueryScope` feeds both the prompt and the guard.
+  - [x] The guard rejects redacted columns, `SELECT *` other than
+    `COUNT(*)`, and whole-row references on restricted tables
+    (conservative). `readonly_role.sql` takes a `schema` variable and
+    documents column-level grants. Postgres integration proves
+    `search_path` resolution and column privileges.
+- [x] **SEC-8 — API-key auth.** *feat(auth): per-client hashed API keys
+  with constant-time lookup* (the `feat` makes the next release minor)
+  - [x] `APIKeyHeader(auto_error=False)`; missing or invalid → 401 with
+    `WWW-Authenticate: APIKey` (test pinned).
+  - [x] `API_KEYS=client_id:sha256` (hashes only; rotation = two entries);
+    `ApiKeyStore` compares every entry with `hmac.compare_digest`; returns
+    a `Principal`. The legacy `API_KEY` still works as client `default`.
+  - [x] Startup validation outside dev: ≥ 32 chars, not a placeholder.
+  - [x] Removed the API-key print from `frontend/api.py`.
+  - [x] *Added*: `make api-key CLIENT=<id>` generates a key and its entry.
+  - [x] The rate limiter keys on `client:<id>` (closes the SEC-3 leftover).
+- [x] **CI-1 — CI gates.**
   - [x] Trigger on `pull_request` + `push: main`.
   - [x] CI runs a check-only `make format-check` instead of `make format`.
-  - [ ] Extend ruff/mypy to `tests/`, `frontend/` and `example/` (needs a
-    one-off reformat of the test files first).
-  - [x] `--cov-branch --cov-fail-under=100` in pytest `addopts` and
-    `[tool.coverage]`: line and branch coverage are both gated at 100%.
-  - [ ] Upload coverage (Coveralls, to make the README badge real) or
-    remove the badge.
-  - [ ] `uv audit` or `pip-audit`; `bandit -r ai_bi_analytics` (or
-    CodeQL); Dependabot for `uv`, `github-actions` and `docker`.
-  - [ ] Docker build job (+ Trivy/Grype scan). The PKG-1 wheel smoke test
-    shipped in Phase 0.
-  - [x] Release only after CI is green, mirroring menu-yetu:
-    `workflow_run` on CI success for `main`, releasing the exact validated
-    SHA, a serialized non-cancelling concurrency group, SHA-pinned actions,
-    pinned uv and PSR (9.21.1), the debug step removed, and
-    `build_command = "uv lock && uv build"` with `uv.lock` committed as a
-    release asset.
-  - [ ] SHA-pin the actions in `ci.yaml` too (only `release.yaml` holds a
-    write token, so it went first).
-- [ ] **TEST-1 — Tests that would have caught Phase 0.**
-  - [x] `fakeredis[lua]` for the limiter and cache; remove the dead
-    `redis_client.eval` patch test. (Shipped with SEC-3.)
-  - [ ] An `integration` marker (exists since SEC-2; runs locally when
-    `TEST_POSTGRES_*_URL` are set) with a Postgres service container in CI:
-    executor + read-only role (a write attempt must fail) + validator
-    corpus end to end + multi-statement attempt.
-  - [x] Route tests that exercise the real `services/cache.py` (stop
-    patching the cache functions). (Shipped with SEC-3.)
-  - [ ] Error-path tests for each SEC-4 status code; prompt-content tests
-    for `nl_to_sql` and `explanation`; `schema_loader` output test.
+  - [x] ruff (format + lint) and mypy cover `ai_bi_analytics`, `tests`,
+    `frontend` and `example`. *ci: lint, format-check and type-check the
+    whole repo; add bandit rules*
+  - [x] `--cov-branch --cov-fail-under=100`: line and branch coverage
+    gated at 100%.
+  - [x] Coverage uploaded to Coveralls (non-blocking). **Needs the repo
+    enabled on coveralls.io** for the badge to show data.
+  - [x] `make audit` (pip-audit via OSV) in CI. The first run found 248
+    CVEs in 13 packages; relocking (plus unpinning `streamlit==1.55.0`,
+    which held pillow back) cleared them all. *build(deps): clear all known
+    dependency vulnerabilities and add make audit*
+  - [x] SAST: ruff `S` (flake8-bandit) rules instead of a separate bandit
+    run.
+  - [x] Dependabot for uv, github-actions and docker.
+  - [x] Docker build + Trivy job. Trivy found fixable HIGH/CRITICAL CVEs
+    in Debian (libzstd1), in the base image's pip, and in the uv binary,
+    plus 536 MB of uv cache baked into the image. All fixed; the image
+    went from 1.68 GB to 906 MB. *build(docker): ship an image with no
+    known fixable HIGH/CRITICAL CVEs*
+  - [x] *Added*: gitleaks secret scan over full history (clean).
+  - [x] Release only after CI is green (Phase 0).
+  - [x] All `ci.yaml` actions SHA-pinned; the workflow token is
+    `contents: read`.
+- [x] **TEST-1 — Tests that would have caught Phase 0.**
+  - [x] `fakeredis[lua]` for the limiter and cache (Phase 0, SEC-3).
+  - [x] Postgres 18 service container in CI, provisioned by the shipped
+    `readonly_role.sql`; the integration suite runs on every PR, and the
+    step fails if it skips.
+  - [x] Route tests use the real `services/cache.py` (Phase 0, SEC-3).
+  - [x] Error-path tests for every SEC-4 status/code (`test_errors.py`);
+    prompt-content tests (`test_prompts.py`); `schema_loader` output
+    tests (`test_query_scope.py`).
 
 ## Phase 2 — Operability 🟠
 
@@ -196,11 +223,18 @@ unless a dependency is noted.
   unauthenticated, rate-limit-exempt); dispose the engine and close Redis
   in `lifespan` teardown; Dockerfile `HEALTHCHECK`; compose
   `healthcheck` + `depends_on: condition: service_healthy`.
-- [ ] **OPS-4 — Container and compose hardening.**
-  - [ ] Multi-stage Dockerfile (uv builder → slim runtime), non-root
-    `USER`, base pinned by digest, `CMD [".venv/bin/uvicorn", …,
-    "--proxy-headers", "--timeout-graceful-shutdown", "20"]`; decide
-    worker count.
+- [ ] **OPS-4 — Container and compose hardening.** (Partly pulled into
+  Phase 1 by the Trivy work: an apt upgrade layer, no pip, uv
+  bind-mounted at build time only, no baked uv cache, a
+  `.venv/bin/uvicorn` CMD, and the compose `/app/.venv` volume.)
+  - [ ] Non-root `USER`, base pinned by digest, add `--proxy-headers`
+    and `--timeout-graceful-shutdown 20` to the CMD; decide worker count.
+    (A separate builder stage is no longer needed for size: uv and its
+    cache already stay out of the image.)
+  - [ ] **uv 0.10.9 itself has CVEs** (bundled zip, quinn-proto,
+    rustls-webpki crates; Trivy, 2026-11-26). It no longer ships in the
+    image, but CI, the release job and developer machines still run it,
+    and menu-yetu pins the same version. Bump both repos together.
   - [ ] Move streamlit, pandas, plotly, python-dotenv and requests into a
     `frontend` optional dependency group (or a separate
     `frontend/pyproject.toml`); the API image installs without them.

@@ -5,8 +5,13 @@ Loads and validates environment-based settings using Pydantic.
 Ensures centralized configuration management.
 """
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import re
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class Settings(BaseSettings):
@@ -27,6 +32,11 @@ class Settings(BaseSettings):
         rate_limit_requests (int): Requests allowed per client per window.
         rate_limit_window_seconds (int): Sliding-window length.
         max_question_length (int): Longest accepted question, in characters.
+        queryable_schema (str): The one schema the LLM sees and queries.
+        queryable_tables (list[str]): Tables/views the LLM may use. Empty
+            means every table in ``queryable_schema`` (development only).
+        redacted_columns (list[str]): ``table.column`` or ``column``
+            entries hidden from the LLM and rejected by the SQL guard.
     """
 
     app_name: str = Field(default="ai-bi-backend", alias="APP_NAME")
@@ -47,6 +57,14 @@ class Settings(BaseSettings):
         default=60, gt=0, alias="RATE_LIMIT_WINDOW_SECONDS"
     )
 
+    queryable_schema: str = Field(default="public", alias="QUERYABLE_SCHEMA")
+    queryable_tables: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="QUERYABLE_TABLES"
+    )
+    redacted_columns: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="REDACTED_COLUMNS"
+    )
+
     max_question_length: int = Field(
         default=500, ge=10, le=4000, alias="MAX_QUESTION_LENGTH"
     )
@@ -55,6 +73,44 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+
+    @field_validator("queryable_tables", "redacted_columns", mode="before")
+    @classmethod
+    def _split_comma_separated(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("queryable_schema")
+    @classmethod
+    def _schema_is_identifier(cls, value: str) -> str:
+        # Interpolated into the connection's search_path option.
+        if not _IDENTIFIER.match(value):
+            raise ValueError("QUERYABLE_SCHEMA must be a plain SQL identifier")
+        return value
+
+    @field_validator("queryable_tables")
+    @classmethod
+    def _tables_are_identifiers(cls, value: list[str]) -> list[str]:
+        bad = [t for t in value if not _IDENTIFIER.match(t)]
+        if bad:
+            raise ValueError(f"QUERYABLE_TABLES has invalid names: {bad}")
+        return value
+
+    @field_validator("redacted_columns")
+    @classmethod
+    def _redactions_are_identifiers(cls, value: list[str]) -> list[str]:
+        bad = [
+            entry
+            for entry in value
+            if not all(_IDENTIFIER.match(part) for part in entry.split("."))
+            or entry.count(".") > 1
+        ]
+        if bad:
+            raise ValueError(
+                f"REDACTED_COLUMNS entries must be 'table.column' or 'column': {bad}"
+            )
+        return value
 
 
 settings = Settings()

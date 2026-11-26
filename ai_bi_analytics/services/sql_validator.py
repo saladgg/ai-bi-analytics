@@ -11,7 +11,10 @@ an AST (sqlglot, Postgres dialect) and accepted only if it is:
   row-locking construct anywhere in the tree (including inside CTEs),
 - free of dangerous functions (server files, large objects, sleeps,
   settings, sequences, dblink, XML query helpers),
-- reading only known tables, and never system catalogs.
+- reading only known tables in the queryable schema, never system
+  catalogs,
+- not touching redacted columns: no explicit reference, no ``*`` and no
+  whole-row reference on a table that has them (audit SEC-7).
 
 ``validate_sql`` returns SQL **regenerated from the validated AST**, and
 that is what gets executed. What was checked is exactly what runs, so
@@ -27,7 +30,7 @@ if anything here is ever wrong.
 """
 
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 
 import sqlglot
 from sqlglot import exp
@@ -73,7 +76,7 @@ FORBIDDEN_NODES: tuple[type[exp.Expression], ...] = (
 )
 
 BLOCKED_SCHEMAS = frozenset({"pg_catalog", "information_schema", "pg_toast"})
-DEFAULT_SCHEMAS = frozenset({"", "public"})
+DEFAULT_SCHEMA = "public"
 
 BLOCKED_FUNCTION_PREFIXES = (
     "pg_",  # pg_sleep, pg_read_file, pg_ls_dir, pg_terminate_backend, ...
@@ -130,6 +133,7 @@ def _check_table(
     cte_names: set[str],
     allowed_exact: set[str] | None,
     allowed_folded: set[str] | None,
+    queryable_schema: str,
 ) -> None:
     if not isinstance(table.this, exp.Identifier):
         # Table-valued function (e.g. generate_series); functions are
@@ -143,7 +147,7 @@ def _check_table(
         raise UnsafeSQLError("Cross-database table references are not allowed.")
     if schema in BLOCKED_SCHEMAS or name.lower().startswith("pg_"):
         raise UnsafeSQLError("System catalogs are not queryable.")
-    if schema not in DEFAULT_SCHEMAS:
+    if schema not in ("", queryable_schema.lower()):
         raise UnsafeSQLError(f"Schema '{table.db}' is not queryable.")
 
     if not schema and name.lower() in cte_names:
@@ -158,7 +162,62 @@ def _check_table(
         raise UnsafeSQLError(f"Unknown table '{name}'.")
 
 
-def validate_sql(sql: str, allowed_tables: Collection[str] | None = None) -> str:
+def _is_count_star(star: exp.Star) -> bool:
+    parent = star.parent
+    if isinstance(parent, exp.Column):  # COUNT(t.*)
+        parent = parent.parent
+    return isinstance(parent, exp.Count)
+
+
+def _check_redactions(
+    tree: exp.Expression, redacted_columns: Mapping[str, Collection[str]]
+) -> None:
+    """
+    Conservative by design: blocks a redacted column name wherever it
+    appears (even qualified by another table), any ``*`` other than
+    ``COUNT(*)``, and bare references to a restricted table's name or alias
+    (whole-row values such as ``row_to_json(u)``). The database's column
+    privileges are the authoritative control; see example/readonly_role.sql.
+    """
+    restricted = {
+        t.lower(): {c.lower() for c in cols}
+        for t, cols in redacted_columns.items()
+        if cols
+    }
+    referenced = {
+        table.name.lower(): table.alias_or_name.lower()
+        for table in tree.find_all(exp.Table)
+        if table.name.lower() in restricted
+    }
+    if not referenced:
+        return
+
+    hidden = set().union(*(restricted[t] for t in referenced))
+    row_names = set(referenced) | set(referenced.values())
+
+    for star in tree.find_all(exp.Star):
+        if not _is_count_star(star):
+            raise UnsafeSQLError(
+                "SELECT * is not allowed on tables with restricted columns; "
+                "list the columns instead."
+            )
+    for column in tree.find_all(exp.Column):
+        name = column.name.lower()
+        if name in hidden:
+            raise UnsafeSQLError(f"Column '{column.name}' is not queryable.")
+        if not column.table and name in row_names:
+            raise UnsafeSQLError(
+                f"Whole-row references to '{column.name}' are not allowed."
+            )
+
+
+def validate_sql(
+    sql: str,
+    allowed_tables: Collection[str] | None = None,
+    *,
+    schema: str = DEFAULT_SCHEMA,
+    redacted_columns: Mapping[str, Collection[str]] | None = None,
+) -> str:
     """
     Validates LLM-generated SQL and returns the canonical query to execute.
 
@@ -166,7 +225,10 @@ def validate_sql(sql: str, allowed_tables: Collection[str] | None = None) -> str
         sql: Raw model output.
         allowed_tables: Table names (as reflected from the database) the
             query may read. ``None`` skips the allowlist check but still
-            blocks system catalogs and non-default schemas.
+            blocks system catalogs and other schemas.
+        schema: The queryable schema; table references may be unqualified
+            or qualified with it.
+        redacted_columns: table -> column names the query may not touch.
 
     Returns:
         str: SQL regenerated from the validated AST (comments removed).
@@ -216,6 +278,9 @@ def validate_sql(sql: str, allowed_tables: Collection[str] | None = None) -> str
     )
     cte_names = _cte_names(tree)
     for table in tree.find_all(exp.Table):
-        _check_table(table, cte_names, allowed_exact, allowed_folded)
+        _check_table(table, cte_names, allowed_exact, allowed_folded, schema)
+
+    if redacted_columns:
+        _check_redactions(tree, redacted_columns)
 
     return tree.sql(dialect=DIALECT, comments=False)

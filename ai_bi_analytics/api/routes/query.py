@@ -15,10 +15,7 @@ from ai_bi_analytics.services.cache import (
 from ai_bi_analytics.services.explanation import explain_result
 from ai_bi_analytics.services.nl_to_sql import generate_sql
 from ai_bi_analytics.services.query_executor import execute_query
-from ai_bi_analytics.services.schema_loader import (
-    load_schema_metadata,
-    load_table_names,
-)
+from ai_bi_analytics.services.schema_loader import load_query_scope
 from ai_bi_analytics.services.sql_validator import validate_sql
 
 logger = logging.getLogger(__name__)
@@ -42,15 +39,21 @@ def query_database(
 
     # No blanket try/except: typed errors and DB/Redis failures are mapped
     # to client-safe responses by the handlers in main.py (audit SEC-4).
-    schema_description = load_schema_metadata(db)
-    cache_key = generate_cache_key(payload.question + "|" + schema_description)
+    scope = load_query_scope(db)
+    cache_key = generate_cache_key(payload.question + "|" + scope.description)
     cached = get_cached_response(cache_key)
     if cached:
         return cached
 
-    generated_sql = generate_sql(payload.question, schema_description)
-    # Execute the guard's canonical SQL, never the raw model output.
-    sql = validate_sql(generated_sql, allowed_tables=load_table_names(db))
+    generated_sql = generate_sql(payload.question, scope.description)
+    # Execute the guard's canonical SQL, never the raw model output. The
+    # model saw exactly `scope`; the guard enforces the same scope.
+    sql = validate_sql(
+        generated_sql,
+        allowed_tables=scope.tables,
+        schema=scope.schema,
+        redacted_columns=scope.redacted,
+    )
     result = execute_query(db, sql)
     explanation = explain_result(payload.question, sql, result)
 

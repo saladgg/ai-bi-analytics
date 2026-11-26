@@ -92,10 +92,10 @@ Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
 ## Features
 
 ### NL → SQL with strict guardrails
-Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglot), Postgres dialect) and accepted only if it is exactly one read query (`SELECT`, `UNION`, `WITH … SELECT`) with no write, DDL, `COPY`, `SELECT INTO` or row lock anywhere in the tree, no dangerous functions (`pg_sleep`, `pg_read_file`, `lo_*`, `dblink`, `set_config`, …), and only tables that exist in the default schema (never system catalogs). The API executes SQL **regenerated from the validated AST**, not the raw model output, so what was checked is exactly what runs. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
+Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglot), Postgres dialect) and accepted only if it is exactly one read query (`SELECT`, `UNION`, `WITH … SELECT`) with no write, DDL, `COPY`, `SELECT INTO` or row lock anywhere in the tree, no dangerous functions (`pg_sleep`, `pg_read_file`, `lo_*`, `dblink`, `set_config`, …), and only tables in the configured query scope (`QUERYABLE_SCHEMA` / `QUERYABLE_TABLES`, never system catalogs) without touching `REDACTED_COLUMNS`. The API executes SQL **regenerated from the validated AST**, not the raw model output, so what was checked is exactly what runs. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
 
 ### Dynamic schema introspection
-Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No hard-coded schema strings means no schema drift between code and prompts.
+Tables and views in the queryable schema are reflected at request time via SQLAlchemy, narrowed to `QUERYABLE_TABLES` with `REDACTED_COLUMNS` removed, and passed to the LLM. The guard enforces that same scope, so the model is never shown anything it can't query, and the reverse. No hard-coded schema strings means no schema drift between code and prompts.
 
 ### Redis distributed cache
 Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
@@ -260,6 +260,10 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `ENV` | `development` | Anything else enforces the database role check at startup |
 | `DB_STATEMENT_TIMEOUT_MS` | `5000` | Server-side cap per query |
 | `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | `10000` | Server-side cap on idle open transactions |
+| `QUERYABLE_SCHEMA` | `public` | The one schema the LLM sees and queries (also the connection's `search_path`) |
+| `QUERYABLE_TABLES` | empty | Comma-separated tables/views the LLM may use. **Required outside `ENV=development`**; empty means every table in the schema |
+| `REDACTED_COLUMNS` | empty | `table.column` or bare `column` entries hidden from the LLM and rejected by the guard (including `SELECT *` on those tables) |
+| `MAX_QUESTION_LENGTH` | `500` | Longest accepted question, in characters |
 | `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
 | `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |

@@ -20,6 +20,7 @@ from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.errors import AppError, DependencyUnavailableError
 from ai_bi_analytics.core.logging_config import setup_logging
 from ai_bi_analytics.core.request_context import RequestIdMiddleware, error_body
+from ai_bi_analytics.core.startup_checks import run_startup_checks
 from ai_bi_analytics.db.errors import translate_db_error
 from ai_bi_analytics.db.session import assert_database_role_is_safe, engine
 
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logging.info("Starting %s in %s", settings.app_name, settings.env)
+    run_startup_checks(settings)
     assert_database_role_is_safe(engine, settings.env)
     yield
 

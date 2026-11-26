@@ -38,6 +38,7 @@ def build_engine_kwargs(
     database_url: str,
     statement_timeout_ms: int,
     idle_in_transaction_timeout_ms: int,
+    search_path: str = "public",
 ) -> dict[str, Any]:
     """
     Engine options. On Postgres, every connection is read-only by default
@@ -55,7 +56,10 @@ def build_engine_kwargs(
                 "-c default_transaction_read_only=on "
                 f"-c statement_timeout={statement_timeout_ms} "
                 f"-c idle_in_transaction_session_timeout="
-                f"{idle_in_transaction_timeout_ms}"
+                f"{idle_in_transaction_timeout_ms} "
+                # Unqualified names resolve in the queryable schema (SEC-7).
+                # Validated as a plain identifier in Settings.
+                f"-c search_path={search_path}"
             )
         }
     return kwargs
@@ -67,6 +71,7 @@ engine = create_engine(
         settings.database_url,
         settings.db_statement_timeout_ms,
         settings.db_idle_in_transaction_timeout_ms,
+        settings.queryable_schema,
     ),
 )
 

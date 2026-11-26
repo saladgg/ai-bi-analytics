@@ -26,3 +26,13 @@ def load_schema_metadata(db: Session) -> str:
         schema_description += f"{table_name}({column_defs})\n"
 
     return schema_description
+
+
+def load_table_names(db: Session) -> set[str]:
+    """
+    Names of the tables the SQL guard lets a query read.
+
+    Same scope as ``load_schema_metadata``: the default schema, which is
+    also all the LLM is shown.
+    """
+    return set(inspect(db.bind).get_table_names())

@@ -8,14 +8,16 @@ SQL_GENERATION_RULES = """
 You are generating SQL for a PostgreSQL database.
 
 Rules:
-- Only generate a single SELECT statement.
-- Do NOT use INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, or CREATE.
+- Generate exactly one read-only query: SELECT, optionally with WITH
+  (common table expressions) or UNION.
+- Do NOT use INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE,
+  COPY, SELECT INTO, or FOR UPDATE.
+- Only query the tables listed in the schema below.
 - Output must contain SQL only.
 - Do NOT wrap the query in markdown.
 - Do NOT use triple backticks.
 - Do NOT include explanations.
 - Do NOT prefix with 'SQL'.
-- Must begin directly with SELECT.
 - Only one statement allowed.
 """
 

@@ -23,10 +23,17 @@ services:
       POSTGRES_USER: test_user
       POSTGRES_PASSWORD: test_pwd
       POSTGRES_DB: ai_bi_db
+      # Read-only role the API connects as (created on first start by
+      # example/initdb/10_readonly_role.sh). Dev-only credentials.
+      APP_DB_READONLY_USER: ai_bi_readonly
+      APP_DB_READONLY_PASSWORD: readonly_pwd
     ports:
       - "5433:5432" # ← Host 5433 → Container 5432
     volumes:
       - postgres_data:/var/lib/postgresql
+      - ./example/initdb/10_readonly_role.sh:/docker-entrypoint-initdb.d/10_readonly_role.sh:ro
+      # .sql.in so the entrypoint doesn't auto-run it without psql variables.
+      - ./example/readonly_role.sql:/docker-entrypoint-initdb.d/readonly_role.sql.in:ro
     restart: always
 
   redis:

@@ -8,12 +8,12 @@ Covers:
 - API validation
 """
 
-from fastapi.testclient import TestClient
-from ai_bi_analytics.main import create_app
 from ai_bi_analytics.db.session import get_db
+from ai_bi_analytics.main import create_app
+from fastapi.testclient import TestClient
 
 
-def test_query_success(client, sample_products, mock_llm, mock_redis):
+def test_query_success(client, sample_products, mock_llm):
     """
     Should successfully process a query end-to-end.
     """

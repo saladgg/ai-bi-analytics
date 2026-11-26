@@ -12,6 +12,12 @@ def execute_query(db: Session, sql: str) -> list[dict]:
     """
     Executes a validated SQL query.
 
+    On Postgres the query runs inside an explicit ``READ ONLY``
+    transaction that is always rolled back, so even SQL that slipped past
+    the guard cannot persist anything (audit SEC-2). This is on top of the
+    connection-level ``default_transaction_read_only`` set in
+    ``db/session.py``.
+
     Args:
         db (Session): SQLAlchemy session.
         sql (str): Safe SQL query.
@@ -20,7 +26,15 @@ def execute_query(db: Session, sql: str) -> list[dict]:
         list[dict]: Result rows as dictionaries.
     """
 
-    result = db.execute(text(sql))
-    rows = result.fetchall()
+    if db.get_bind().dialect.name != "postgresql":
+        result = db.execute(text(sql))
+        return [dict(row._mapping) for row in result.fetchall()]
 
-    return [dict(row._mapping) for row in rows]
+    # SET TRANSACTION must be the first statement of its transaction.
+    db.rollback()
+    try:
+        db.execute(text("SET TRANSACTION READ ONLY"))
+        result = db.execute(text(sql))
+        return [dict(row._mapping) for row in result.fetchall()]
+    finally:
+        db.rollback()

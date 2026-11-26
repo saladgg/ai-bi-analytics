@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-bi-analytics"
-version = "v1.0.0"
+version = "1.0.0"
 description = "AI-powered Business Intelligence backend built with FastAPI and PostgreSQL."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -32,14 +32,14 @@ dependencies = [
   "psycopg2-binary>=2.9.11",
   "openai>=2.21.0",
   "python-dotenv>=1.2.1",
-  "build>=1.4.0",
   "redis>=7.2.0",
   "opentelemetry-instrumentation-fastapi>=0.61b0",
   "opentelemetry-sdk>=1.40.0",
   "opentelemetry-exporter-otlp>=1.40.0",
   "streamlit==1.55.0",
-  "pandas==2.3.3", 
-  "plotly==6.6.0"
+  "pandas==2.3.3",
+  "plotly==6.6.0",
+  "sqlglot>=30.35.0",
 ]
 
 [dependency-groups]
@@ -47,7 +47,8 @@ test = [
   "pytest>=9.0.2",
   "pytest-cov>=5.0.0",
   "pytest-sugar~=1.1.1",
-  "Faker>=40.4.0"
+  "Faker>=40.4.0",
+  "fakeredis[lua]>=2.41.0",
 ]
 dev = [
   { include-group = "test" },
@@ -65,8 +66,11 @@ Documentation = "https://github.com/saladgg/ai-bi-analytics/docs" # todo
 Changelog = "https://github.com/saladgg/ai-bi-analytics/releases"
 
 
-[tool.setuptools]
-packages = ["ai_bi_analytics"]
+[tool.setuptools.packages.find]
+include = ["ai_bi_analytics*"]
+
+[tool.setuptools.package-data]
+ai_bi_analytics = ["core/lua/*.lua"]
 
 [tool.ruff]
 include = [
@@ -110,8 +114,30 @@ profile = "black"
 
 
 [tool.pytest.ini_options]
-addopts = "--cov=ai_bi_analytics --cov-report=term-missing --durations=10 --cache-clear -v"
+# Coverage is a hard gate: line AND branch coverage must stay at 100%.
+# Running a subset of tests locally will trip it; pass --no-cov for that.
+addopts = """
+    --cov=ai_bi_analytics
+    --cov-branch
+    --cov-report=term-missing
+    --cov-fail-under=100
+    --durations=10
+    --cache-clear
+    -v
+"""
 testpaths = ["tests"]
+markers = [
+  "integration: needs real backing services (see each module's docstring); skipped when not configured",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["ai_bi_analytics"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = false
 
 [[tool.uv.index]]
 name = "pypi"
@@ -121,10 +147,16 @@ url = "https://pypi.org/simple"
 [tool.semantic_release]
 commit_parser = "conventional"
 version_toml = [
-    "pyproject.toml:project.version:tf"
+    "pyproject.toml:project.version:nf"
 ]
 branch = "main"
-build_command = "python -m build"
+# uv.lock records the project's own version. Without re-locking, the release
+# commit leaves it one version behind and the next `uv run` on any branch
+# drags a stray uv.lock bump into an unrelated PR. `uv lock` keeps pinned
+# dependency versions unchanged. `uv build` produces the wheel/sdist that
+# `publish` attaches to the GitHub release.
+build_command = "uv lock && uv build"
+assets = ["uv.lock"]
 
 [tool.semantic_release.publish]
 upload_to_vcs_release = true

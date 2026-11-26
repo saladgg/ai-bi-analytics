@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from ai_bi_analytics.api.deps import verify_api_key
@@ -15,7 +15,10 @@ from ai_bi_analytics.services.cache import (
 from ai_bi_analytics.services.explanation import explain_result
 from ai_bi_analytics.services.nl_to_sql import generate_sql
 from ai_bi_analytics.services.query_executor import execute_query
-from ai_bi_analytics.services.schema_loader import load_schema_metadata
+from ai_bi_analytics.services.schema_loader import (
+    load_schema_metadata,
+    load_table_names,
+)
 from ai_bi_analytics.services.sql_validator import validate_sql
 
 logger = logging.getLogger(__name__)
@@ -26,6 +29,7 @@ router = APIRouter()
 @router.post("/query", response_model=QueryResponse)
 def query_database(
     request: Request,
+    response: Response,
     payload: QueryRequest,
     db: Session = Depends(get_db),  # noqa B008
     _: None = Depends(verify_api_key),
@@ -33,7 +37,8 @@ def query_database(
     """
     Full NL → SQL → Execute pipeline.
     """
-    enforce_rate_limit(request)
+    rate_limit = enforce_rate_limit(request)
+    response.headers.update(rate_limit.headers())
     try:
         schema_description = load_schema_metadata(db)
         cache_key = generate_cache_key(payload.question + "|" + schema_description)
@@ -41,8 +46,9 @@ def query_database(
         if cached:
             return cached
 
-        sql = generate_sql(payload.question, schema_description)
-        validate_sql(sql)
+        generated_sql = generate_sql(payload.question, schema_description)
+        # Execute the guard's canonical SQL, never the raw model output.
+        sql = validate_sql(generated_sql, allowed_tables=load_table_names(db))
         result = execute_query(db, sql)
         explanation = explain_result(payload.question, sql, result)
 
@@ -55,7 +61,7 @@ def query_database(
             },
         )
 
-        response = QueryResponse(
+        query_response = QueryResponse(
             sql=sql,
             result=result,
             explanation=explanation,
@@ -63,10 +69,10 @@ def query_database(
 
         set_cached_response(
             cache_key,
-            response.model_dump(),
+            query_response.model_dump(),
         )
 
-        return response
+        return query_response
 
     except Exception as exc:
         logger.error("Request failure: %s", str(exc))

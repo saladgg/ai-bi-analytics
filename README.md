@@ -20,10 +20,12 @@ A production-grade FastAPI service that turns **natural-language questions into 
 - [Tech stack](#tech-stack)
 - [Project layout](#project-layout)
 - [Getting started](#getting-started)
+- [Configuration](#configuration)
 - [API usage](#api-usage)
 - [Development workflow](#development-workflow)
 - [Releases](#releases)
 - [Roadmap](#roadmap)
+- [License](#license)
 
 ---
 
@@ -67,7 +69,7 @@ This project demonstrates how to ship that capability **safely**: an LLM-backed 
         └──────────┬───────────┘
                    ▼
         ┌──────────────────────┐
-        │   SQL validator      │  SELECT-only, single statement
+        │   SQL guard (AST)    │  one read query, known tables
         └──────────┬───────────┘
                    ▼
         ┌──────────────────────┐
@@ -90,7 +92,7 @@ Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
 ## Features
 
 ### NL → SQL with strict guardrails
-The validator rejects anything that isn't a single `SELECT`. `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, multi-statement payloads, and comments-as-injection are all blocked before the query reaches the database. The DB user itself should also be read-only (see [`.env.example`](.env.example) — `readonly_user`).
+Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglot), Postgres dialect) and accepted only if it is exactly one read query (`SELECT`, `UNION`, `WITH … SELECT`) with no write, DDL, `COPY`, `SELECT INTO` or row lock anywhere in the tree, no dangerous functions (`pg_sleep`, `pg_read_file`, `lo_*`, `dblink`, `set_config`, …), and only tables that exist in the default schema (never system catalogs). The API executes SQL **regenerated from the validated AST**, not the raw model output, so what was checked is exactly what runs. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
 
 ### Dynamic schema introspection
 Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No hard-coded schema strings means no schema drift between code and prompts.
@@ -99,11 +101,13 @@ Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No h
 Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
 
 ### Sliding-window rate limiting
-Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-increment is atomic across replicas. Default policy: 5 requests per minute per client.
+Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the connecting address. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
 
 ### Observability
-- **Structured logging** — request lifecycle, cache hit/miss, SQL, row counts, errors.
-- **OpenTelemetry tracing** — FastAPI auto-instrumentation; spans cover the API, Redis, and DB calls so a single `trace_id` follows a request end-to-end.
+- **Logging** — request lifecycle, SQL and errors via the standard `logging` config in [`core/logging_config.py`](ai_bi_analytics/core/logging_config.py).
+- **OpenTelemetry** — FastAPI auto-instrumentation is enabled.
+
+Not wired yet (tracked as OPS-2 in [`docs/todos`](docs/todos/01_general_audit_todos.md)): an OTLP exporter, DB/Redis/LLM spans, trace ids in log lines, JSON logs, and metrics.
 
 ### API-key auth
 Static `x-api-key` header validated by [`ai_bi_analytics/api/deps.py`](ai_bi_analytics/api/deps.py). Suitable for internal/service-to-service use; swap in OAuth/JWT for end-user auth.
@@ -118,13 +122,14 @@ A minimal Streamlit UI ships under [`frontend/`](frontend/) for exploring the AP
 | Layer                  | Technology                                           |
 |------------------------|------------------------------------------------------|
 | API framework          | FastAPI + Uvicorn                                    |
-| Database               | PostgreSQL 18 (via SQLAlchemy 2.x)                   |
+| Database               | PostgreSQL 18 (via SQLAlchemy 2.x), read-only role   |
+| SQL guard              | sqlglot (AST parse + canonical regeneration)         |
 | Cache & rate limiting  | Redis 8 (Lua-scripted sliding window)                |
 | LLM provider           | OpenAI (abstracted behind `services/llm_client.py`)  |
 | Observability          | OpenTelemetry (FastAPI instrumentation)              |
 | Frontend (demo)        | Streamlit + pandas + Plotly                          |
 | Containerization       | Docker + docker-compose                              |
-| Python tooling         | uv, ruff, mypy, pytest, pre-commit                   |
+| Python tooling         | uv, ruff, mypy, pytest, fakeredis                    |
 | Release automation     | python-semantic-release (Conventional Commits)       |
 
 ---
@@ -146,26 +151,34 @@ ai-bi-analytics/
 │   │   └── lua/sliding_window_rate_limit.lua
 │   ├── db/
 │   │   ├── models.py
-│   │   └── session.py            # SQLAlchemy session factory
+│   │   └── session.py            # Engine (read-only + timeouts), role guard
 │   ├── schemas/query.py          # Request/response models
 │   ├── services/
 │   │   ├── cache.py              # Redis response cache
 │   │   ├── explanation.py        # LLM explanation step
 │   │   ├── llm_client.py         # Provider abstraction
 │   │   ├── nl_to_sql.py          # NL → SQL generation
-│   │   ├── query_executor.py     # Read-only execution
-│   │   ├── schema_loader.py      # Schema introspection
-│   │   └── sql_validator.py      # SELECT-only guardrail
+│   │   ├── query_executor.py     # READ ONLY transaction, always rolled back
+│   │   ├── schema_loader.py      # Schema + table-name introspection
+│   │   └── sql_validator.py      # AST SQL guard (sqlglot)
 │   └── main.py                   # FastAPI app factory
 │
 ├── frontend/                     # Streamlit demo UI
-├── example/                      # DB user/data bootstrap scripts
+├── example/
+│   ├── readonly_role.sql         # Least-privilege role the API connects as
+│   ├── initdb/                   # Compose Postgres first-start hook
+│   ├── db_user_setup.py          # Owner + read-only roles on host Postgres
+│   └── gen_test_table_data.py    # Seed sample data (owner role)
 ├── tests/                        # pytest suite
+│   └── integration/              # Real-Postgres checks (opt-in)
+├── docs/todos/                   # Audit findings + phased backlogs
 │
 ├── Dockerfile
+├── .dockerignore                 # Keeps .env, .venv, .git out of images
 ├── docker-compose.yml            # api + postgres + redis
 ├── Makefile                      # uv-based developer commands
 ├── pyproject.toml
+├── uv.lock                       # Pinned dependency set (Docker uses --frozen)
 ├── .env.example
 ├── CHANGELOG.md                  # Generated by semantic-release
 └── README.md
@@ -191,6 +204,8 @@ cp .env.example .env
 # then edit .env: API_KEY, DATABASE_URL, OPENAI_API_KEY, ...
 ```
 
+`DATABASE_URL` must use a **read-only** role. Outside `ENV=development` the API refuses to start if the role is a superuser or can create roles/databases or bypass RLS. See [Configuration](#configuration).
+
 ### Option A — Docker (recommended)
 
 Brings up `api`, `postgres`, and `redis` in one command.
@@ -199,13 +214,13 @@ Brings up `api`, `postgres`, and `redis` in one command.
 make docker-build
 make docker-up
 
-# In another shell, seed sample data
+# In another shell, seed sample data (connects as the owner role)
 python example/gen_test_table_data.py
 
 make docker-down   # tear down (also removes named volumes)
 ```
 
-The dockerized Postgres listens on host port **5433** (mapped to container 5432). See [example/README.md](example/README.md) for details on connecting and seeding.
+The dockerized Postgres listens on host port **5433** (mapped to container 5432). On first start with an empty volume it creates the read-only `ai_bi_readonly` role the API should use. If your `postgres_data` volume predates that, see [example/README.md](example/README.md#which-script-do-i-need) for the one-line fix.
 
 ### Option B — Run locally
 
@@ -218,15 +233,38 @@ make venv_setup
 source .venv/bin/activate
 make install-dev
 
-# Start a Postgres + Redis somewhere reachable, then:
+# Start a Postgres + Redis somewhere reachable.
+# Host-installed Postgres: create the database + owner and read-only roles
+python example/db_user_setup.py
+
 make run_local        # uvicorn with --reload on :8000
 
-# Optional — seed sample data and launch the demo UI
-python example/gen_test_table_data.py
+# Optional — seed sample data (owner role) and launch the demo UI
+SEED_DATABASE_URL=postgresql+psycopg2://ai_bi_owner:owner_pwd@localhost:5432/ai_bi_db \
+  python example/gen_test_table_data.py
 make run_frontend     # Streamlit on :8501
 ```
 
 Run `make help` for the full target list.
+
+---
+
+## Configuration
+
+Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_analytics/core/config.py).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `API_KEY` | — (required) | Static key expected in the `x-api-key` header |
+| `DATABASE_URL` | — (required) | SQLAlchemy URL; must use a read-only role |
+| `ENV` | `development` | Anything else enforces the database role check at startup |
+| `DB_STATEMENT_TIMEOUT_MS` | `5000` | Server-side cap per query |
+| `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | `10000` | Server-side cap on idle open transactions |
+| `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
+| `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies uvicorn trusts for `X-Forwarded-For` |
+| `LLM_PROVIDER` / `OPENAI_API_KEY` | `openai` / — | LLM backend |
 
 ---
 
@@ -266,6 +304,10 @@ Response:
 }
 ```
 
+`sql` is the guard's canonical form of the generated query, which is exactly what was executed.
+
+Every `/api/query` response carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`. Over the limit, the API returns **429** with `Retry-After`.
+
 Interactive docs are served at `/docs` (Swagger) and `/redoc` once the API is running.
 
 ---
@@ -279,9 +321,15 @@ make test        # pytest with coverage
 make clean       # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
 ```
 
-Tests live under [`tests/`](tests/) and run against a SQLite test DB plus mocked Redis/LLM. Coverage is reported to Coveralls (see badge).
+Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`. The Coveralls upload isn't wired into CI yet (CI-1).
 
-Pre-commit hooks are configured in `.pre-commit-config.yaml`; install once with `pre-commit install`.
+The integration suite in [`tests/integration/`](tests/integration/) checks the read-only guarantees against a real PostgreSQL. It is skipped unless both URLs are set, e.g. against the compose Postgres:
+
+```bash
+TEST_POSTGRES_OWNER_URL=postgresql+psycopg2://test_user:test_pwd@localhost:5433/ai_bi_db \
+TEST_POSTGRES_READONLY_URL=postgresql+psycopg2://ai_bi_readonly:readonly_pwd@localhost:5433/ai_bi_db \
+  make test
+```
 
 ---
 
@@ -296,6 +344,26 @@ Versioning and changelog are automated via [python-semantic-release](https://pyt
 | `BREAKING CHANGE:` footer    | major        |
 | `docs:`, `chore:`, `ci:`, `test:`, `style:`, `build:` | none |
 
+Releases are fully automated and gated on CI:
+
+1. A PR runs CI (format check, lint + mypy, tests at 100% coverage, wheel smoke test).
+2. On merge, CI runs again on `main`.
+3. Only if that run succeeds does [`release.yaml`](.github/workflows/release.yaml) run semantic-release, on the exact commit CI validated. It bumps the version, re-locks `uv.lock`, updates the changelog, tags, and publishes a GitHub release with the wheel and sdist attached.
+
+Releases are serialized, so two quick merges can't collide. A red build is never released.
+
 See [`CHANGELOG.md`](CHANGELOG.md) for the generated history.
 
 ---
+
+## Roadmap
+
+Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings paired with phased checklists. The current backlog, [`01_general_audit_todos.md`](docs/todos/01_general_audit_todos.md), has Phase 0 (SQL guard, read-only database, rate limiting, build and packaging) shipped. Next up: typed errors without leakage, bounded result sets, table allowlists, stronger API-key auth, and CI gates (Phase 1), then observability and container hardening (Phase 2).
+
+---
+
+## License
+
+Copyright © 2026 Salad Guyo. All rights reserved.
+
+This is proprietary software, as declared in [`pyproject.toml`](pyproject.toml) (`license = { text = "Proprietary" }`). No license is granted to use, copy, modify, or distribute it without the copyright holder's prior written permission.

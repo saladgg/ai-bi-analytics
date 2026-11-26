@@ -15,11 +15,13 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from ai_bi_analytics.api.routes import query
 from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.logging_config import setup_logging
+from ai_bi_analytics.db.session import assert_database_role_is_safe, engine
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    logging.info(f"Starting {settings.app_name} in {settings.env}")
+    logging.info("Starting %s in %s", settings.app_name, settings.env)
+    assert_database_role_is_safe(engine, settings.env)
     yield
 
 

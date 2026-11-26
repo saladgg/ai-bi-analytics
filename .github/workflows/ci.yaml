@@ -1,7 +1,12 @@
 name: CI
 
+# Runs on every PR and on main. release.yaml triggers off this workflow
+# completing successfully on main, so nothing is released unless the
+# checks below (formatting, lint, 100% coverage, wheel smoke test) pass.
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 jobs:
@@ -20,7 +25,9 @@ jobs:
         run: make install-dev
 
       - name: Format check
-        run: make format
+        # Check-only: `make format` rewrites files and always exits 0, so it
+        # could never fail CI.
+        run: make format-check
 
       - name: Lint
         run: make lint
@@ -30,3 +37,13 @@ jobs:
           API_KEY: test-api-key
           DATABASE_URL: sqlite:///./test.db
         run: make test
+
+      - name: Wheel smoke test (installs and imports from a clean venv)
+        env:
+          API_KEY: test-api-key
+          DATABASE_URL: sqlite://
+        run: |
+          uv build --wheel -o dist-smoke
+          uv venv /tmp/wheel-smoke
+          VIRTUAL_ENV=/tmp/wheel-smoke uv pip install dist-smoke/*.whl
+          cd /tmp && /tmp/wheel-smoke/bin/python -I -c "import ai_bi_analytics.main"

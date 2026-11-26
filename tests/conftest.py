@@ -10,17 +10,15 @@ This file provides:
 Automatically discovered by pytest.
 """
 
+import fakeredis
 import pytest
+from ai_bi_analytics.api.deps import verify_api_key
+from ai_bi_analytics.db.models import Base
+from ai_bi_analytics.db.session import get_db
+from ai_bi_analytics.main import create_app
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
-from ai_bi_analytics.main import create_app
-from ai_bi_analytics.db.models import Base
-from ai_bi_analytics.db.session import get_db
-from ai_bi_analytics.api.deps import verify_api_key
-
-
 
 # -----------------------------
 # Test Database Setup
@@ -30,7 +28,7 @@ SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},  
+    connect_args={"check_same_thread": False},
 )
 
 TestingSessionLocal = sessionmaker(
@@ -73,6 +71,7 @@ def db_session():
 # FastAPI Test Client
 # -----------------------------
 
+
 @pytest.fixture()
 def client(db_session):
     """
@@ -94,10 +93,10 @@ def client(db_session):
         yield c
 
 
-
 # -----------------------------
 # Sample Test Data Fixture
 # -----------------------------
+
 
 @pytest.fixture()
 def sample_products(db_session):
@@ -117,9 +116,11 @@ def sample_products(db_session):
 
     return products
 
+
 # -----------------------------
 # Mock LLM
 # -----------------------------
+
 
 @pytest.fixture()
 def mock_llm(monkeypatch):
@@ -142,91 +143,22 @@ def mock_llm(monkeypatch):
         lambda: mock_llm_instance,
     )
 
-# -----------------------------
-# Mock rate_limiter
-# -----------------------------
-@pytest.fixture(autouse=True)
-def mock_rate_limiter(monkeypatch):
-    """
-    Mock Lua rate limiter script directly.
-
-    This avoids real Redis calls caused by register_script.
-    """
-
-    fake_store = {}
-
-    def fake_rate_limit_script(*args, **kwargs):
-        """
-        Simulates sliding window rate limiting.
-        """
-        key = kwargs.get("keys", [None])[0]
-
-        count = fake_store.get(key, 0)
-        count += 1
-        fake_store[key] = count
-
-        return count  
-
-    monkeypatch.setattr(
-    "ai_bi_analytics.core.rate_limiter.get_rate_limit_script",
-    lambda: fake_rate_limit_script,
-    )
-    
 
 # -----------------------------
-# Mock redis
+# Redis (rate limiter + cache)
 # -----------------------------
 @pytest.fixture(autouse=True)
-def mock_redis(monkeypatch):
+def fake_redis(monkeypatch):
     """
-    Mock Redis globally for all tests.
+    In-memory Redis that executes Lua for real (``fakeredis[lua]``).
 
-    Prevents real Redis connections and provides
-    in-memory behavior for cache + rate limiter.
+    The rate limiter and the response cache both run their real code
+    against it. The previous hand-written fakes didn't match the Lua
+    script's semantics and hid a limiter that never blocked (audit SEC-3).
     """
+    client = fakeredis.FakeRedis(decode_responses=True)
 
-    fake_store = {}
+    monkeypatch.setattr("ai_bi_analytics.core.rate_limiter.redis_client", client)
+    monkeypatch.setattr("ai_bi_analytics.services.cache.redis_client", client)
 
-    def fake_get(key):
-        return fake_store.get(key)
-
-    def fake_setex(key, ex, value):
-        fake_store[key] = value
-
-    # Patch Redis client methods actually used by cache.py
-    monkeypatch.setattr(
-        "ai_bi_analytics.services.cache.redis_client.get",
-        fake_get,
-    )
-
-    monkeypatch.setattr(
-        "ai_bi_analytics.services.cache.redis_client.setex",
-        fake_setex,
-    )
-
-# -----------------------------
-# Mock cache
-# -----------------------------
-@pytest.fixture(autouse=True)
-def mock_cache(monkeypatch):
-    """
-    Mock cache layer (NOT Redis directly).
-    """
-
-    fake_cache = {}
-
-    def fake_get_cached_response(key):
-        return fake_cache.get(key)
-
-    def fake_set_cached_response(key, value):
-        fake_cache[key] = value
-
-    monkeypatch.setattr(
-        "ai_bi_analytics.api.routes.query.get_cached_response",
-        fake_get_cached_response,
-    )
-
-    monkeypatch.setattr(
-        "ai_bi_analytics.api.routes.query.set_cached_response",
-        fake_set_cached_response,
-    )
+    return client

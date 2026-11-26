@@ -17,6 +17,7 @@ help:
 	@echo "  make format         Format code"
 	@echo "  make format-check   Check formatting without changing files (CI)"
 	@echo "  make test           Run tests (fails under 100% line+branch coverage)"
+	@echo "  make audit          Audit dependencies for known vulnerabilities"
 	@echo "  make docker-build   Build Docker image"
 	@echo "  make api-key CLIENT=<id>  Generate a client API key + API_KEYS entry"
 
@@ -81,6 +82,12 @@ lint:
 
 test:
 	uv run pytest
+
+.PHONY: audit
+audit:
+	# OSV batches its queries; the default PyPI service issues one request
+	# per installed package and times out intermittently in CI.
+	uv run pip-audit -s osv --timeout 60
 
 # ----------------------------------------------------------
 # Run Application

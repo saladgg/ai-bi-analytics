@@ -240,9 +240,10 @@ def make_openai_client(monkeypatch, *, raises=None, content="SELECT 1"):
 
 
 def test_provider_error_becomes_llm_unavailable(monkeypatch):
-    import httpx
+    # openai 3.x's HTTP client (it replaced httpx, which is no longer installed).
+    import httpx2
 
-    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
     client = make_openai_client(
         monkeypatch, raises=openai.APIConnectionError(request=request)
     )

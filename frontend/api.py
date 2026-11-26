@@ -7,8 +7,6 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL")
 
-print("API KEY:", API_KEY)
-
 def call_backend(question: str):
     response = requests.post(
         f"{API_BASE_URL}/api/query/",

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from ai_bi_analytics.api.deps import verify_api_key
 from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.rate_limiter import enforce_rate_limit
+from ai_bi_analytics.core.security import Principal
 from ai_bi_analytics.db.session import get_db
 from ai_bi_analytics.schemas.query import QueryRequest, QueryResponse
 from ai_bi_analytics.services.cache import (
@@ -30,12 +31,12 @@ def query_database(
     response: Response,
     payload: QueryRequest,
     db: Session = Depends(get_db),  # noqa B008
-    _: None = Depends(verify_api_key),
+    principal: Principal = Depends(verify_api_key),
 ):
     """
     Full NL → SQL → Execute pipeline.
     """
-    rate_limit = enforce_rate_limit(request)
+    rate_limit = enforce_rate_limit(request, f"client:{principal.client_id}")
     response.headers.update(rate_limit.headers())
 
     # No blanket try/except: typed errors and DB/Redis failures are mapped
@@ -62,6 +63,7 @@ def query_database(
     logger.info(
         "Query executed",
         extra={
+            "client_id": principal.client_id,
             "question": payload.question,
             "sql": sql,
             "row_count": len(result.rows),

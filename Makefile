@@ -18,6 +18,7 @@ help:
 	@echo "  make format-check   Check formatting without changing files (CI)"
 	@echo "  make test           Run tests (fails under 100% line+branch coverage)"
 	@echo "  make docker-build   Build Docker image"
+	@echo "  make api-key CLIENT=<id>  Generate a client API key + API_KEYS entry"
 
 
 
@@ -57,6 +58,11 @@ update:
 # ----------------------------------------------------------
 
 SOURCE = ai_bi_analytics
+
+.PHONY: api-key
+api-key:
+	@test -n "$(CLIENT)" || (echo "usage: make api-key CLIENT=<client_id>" && exit 2)
+	uv run python -m ai_bi_analytics.core.security $(CLIENT)
 
 .PHONY: format format-check lint test
 

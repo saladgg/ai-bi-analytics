@@ -102,5 +102,5 @@ def test_query_missing_api_key(db_session):
             headers={},  # explicitly empty
         )
 
-    # Accept both depending on implementation
-    assert response.status_code in (401, 403, 422)
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "APIKey"

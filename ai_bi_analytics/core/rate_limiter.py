@@ -82,9 +82,15 @@ def check_rate_limit(
     )
 
 
-def enforce_rate_limit(request: Request) -> RateLimitResult:
+def enforce_rate_limit(
+    request: Request, identity: str | None = None
+) -> RateLimitResult:
     """
     Records the request against the caller's window.
+
+    Args:
+        identity: Bucket for an authenticated caller (e.g.
+            ``client:<id>``). Without one, the client address is used.
 
     Returns:
         RateLimitResult: for setting ``X-RateLimit-*`` response headers.
@@ -93,7 +99,7 @@ def enforce_rate_limit(request: Request) -> RateLimitResult:
         HTTPException: 429 with ``Retry-After`` when the window is full.
     """
     result = check_rate_limit(
-        client_identifier(request),
+        identity or client_identifier(request),
         settings.rate_limit_requests,
         settings.rate_limit_window_seconds,
     )

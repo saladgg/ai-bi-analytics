@@ -225,6 +225,7 @@ def test_scope_and_guard_on_dedicated_schema(scoped_session, analytics_schema):
     from ai_bi_analytics.services.sql_validator import validate_sql
 
     cfg = Settings(
+        _env_file=None,
         API_KEY="k",
         DATABASE_URL=READONLY_URL,
         QUERYABLE_SCHEMA=analytics_schema,

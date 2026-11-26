@@ -8,7 +8,7 @@ Ensures centralized configuration management.
 import re
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -22,7 +22,8 @@ class Settings(BaseSettings):
         app_name (str): Application name.
         env (str): Runtime environment (development, staging, production).
         log_level (str): Logging verbosity level.
-        api_key (str): Static API key for request authentication.
+        api_key (SecretStr | None): Legacy single API key (client "default").
+        api_keys (list[str]): ``client_id:sha256hex`` entries, one per client.
         database_url (str): SQLAlchemy database connection string.
         llm_provider (str): LLM provider identifier.
         openai_api_key (str | None): OpenAI API key if used.
@@ -47,7 +48,10 @@ class Settings(BaseSettings):
     env: str = Field(default="development", alias="ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
-    api_key: str = Field(alias="API_KEY")
+    api_key: SecretStr | None = Field(default=None, alias="API_KEY")
+    api_keys: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="API_KEYS"
+    )
     database_url: str = Field(alias="DATABASE_URL")
     db_statement_timeout_ms: int = Field(
         default=5000, gt=0, alias="DB_STATEMENT_TIMEOUT_MS"
@@ -86,12 +90,29 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
-    @field_validator("queryable_tables", "redacted_columns", mode="before")
+    @field_validator("queryable_tables", "redacted_columns", "api_keys", mode="before")
     @classmethod
     def _split_comma_separated(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("api_keys")
+    @classmethod
+    def _api_keys_well_formed(cls, value: list[str]) -> list[str]:
+        from ai_bi_analytics.core.security import parse_api_key_entry
+
+        client_ids = [parse_api_key_entry(entry)[0] for entry in value]
+        duplicates = sorted({c for c in client_ids if client_ids.count(c) > 1})
+        if duplicates:
+            raise ValueError(f"API_KEYS has duplicate client ids: {duplicates}")
+        return value
+
+    @model_validator(mode="after")
+    def _some_api_key_configured(self) -> "Settings":
+        if not self.api_keys and not (self.api_key and self.api_key.get_secret_value()):
+            raise ValueError("Configure API_KEYS (preferred) or API_KEY")
+        return self
 
     @field_validator("queryable_schema")
     @classmethod

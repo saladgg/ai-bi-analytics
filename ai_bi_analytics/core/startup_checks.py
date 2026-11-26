@@ -8,6 +8,7 @@ fails fast on settings that would be unsafe in a shared deployment.
 import logging
 
 from ai_bi_analytics.core.config import Settings
+from ai_bi_analytics.core.security import MIN_KEY_LENGTH, PLACEHOLDER_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -35,5 +36,31 @@ def check_query_scope(cfg: Settings) -> None:
     logger.warning("%s Allowed only because ENV=%s.", message, cfg.env)
 
 
+def check_api_keys(cfg: Settings) -> None:
+    """
+    Audit SEC-8: a short or placeholder legacy API_KEY (e.g. the
+    ``change-me`` from .env.example) is refused outside development.
+    API_KEYS entries are hashes of generated keys, validated on load.
+    """
+    if cfg.api_key is None:
+        return
+    key = cfg.api_key.get_secret_value()
+    problems = []
+    if key.lower() in PLACEHOLDER_KEYS:
+        problems.append("is a placeholder")
+    if len(key) < MIN_KEY_LENGTH:
+        problems.append(f"is shorter than {MIN_KEY_LENGTH} characters")
+    if not problems:
+        return
+    message = f"API_KEY {' and '.join(problems)}."
+    if cfg.env != DEVELOPMENT_ENV:
+        raise UnsafeConfigurationError(
+            message + " Generate keys with `python -m ai_bi_analytics.core.security"
+            " <client_id>` and use API_KEYS."
+        )
+    logger.warning("%s Allowed only because ENV=%s.", message, cfg.env)
+
+
 def run_startup_checks(cfg: Settings) -> None:
     check_query_scope(cfg)
+    check_api_keys(cfg)

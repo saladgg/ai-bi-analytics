@@ -101,7 +101,7 @@ Tables and views in the queryable schema are reflected at request time via SQLAl
 Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
 
 ### Sliding-window rate limiting
-Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the connecting address. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
+Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
 
 ### Observability
 - **Logging** — request lifecycle, SQL and errors via the standard `logging` config in [`core/logging_config.py`](ai_bi_analytics/core/logging_config.py).
@@ -110,7 +110,7 @@ Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rat
 Not wired yet (tracked as OPS-2 in [`docs/todos`](docs/todos/01_general_audit_todos.md)): an OTLP exporter, DB/Redis/LLM spans, trace ids in log lines, JSON logs, and metrics.
 
 ### API-key auth
-Static `x-api-key` header validated by [`ai_bi_analytics/api/deps.py`](ai_bi_analytics/api/deps.py). Suitable for internal/service-to-service use; swap in OAuth/JWT for end-user auth.
+Each client sends its own key in the `x-api-key` header. The server stores only SHA-256 hashes (`API_KEYS=client_id:hash,...`), compares in constant time against every entry, and identifies the caller for rate limiting and logs. To rotate a key, list the new entry next to the old one, then remove the old. Missing or unknown keys get `401`. Generate a key with `make api-key CLIENT=<id>`. See [`core/security.py`](ai_bi_analytics/core/security.py). Suitable for internal and service-to-service use; swap in OAuth/JWT for end-user auth.
 
 ### Streamlit frontend (demo)
 A minimal Streamlit UI ships under [`frontend/`](frontend/) for exploring the API without writing curl commands. **Demo only** — see [frontend/README.md](frontend/README.md) for limitations.
@@ -255,7 +255,8 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `API_KEY` | — (required) | Static key expected in the `x-api-key` header |
+| `API_KEYS` | empty | `client_id:sha256(key)` entries, one per client (generate with `make api-key CLIENT=<id>`) |
+| `API_KEY` | empty | Legacy single key, authenticates as client `default`. Outside development: 32+ chars, not a placeholder. One of `API_KEYS`/`API_KEY` is required |
 | `DATABASE_URL` | — (required) | SQLAlchemy URL; must use a read-only role |
 | `ENV` | `development` | Anything else enforces the database role check at startup |
 | `DB_STATEMENT_TIMEOUT_MS` | `5000` | Server-side cap per query |
@@ -277,7 +278,7 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 
 ## API usage
 
-All endpoints require a static `x-api-key` header that matches `API_KEY` in `.env`.
+`/api/query` requires an `x-api-key` header holding a client key (see [API-key auth](#api-key-auth)); `/api/health` is open.
 
 ### Health
 

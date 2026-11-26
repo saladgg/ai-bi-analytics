@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 def make_settings(**env) -> Settings:
     base = {"API_KEY": "k", "DATABASE_URL": "sqlite://"}
-    return Settings(**{**base, **env})
+    return Settings(_env_file=None, **{**base, **env})
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,8 @@ update:
 # ----------------------------------------------------------
 
 SOURCE = ai_bi_analytics
+# Everything ruff formats and lints (mypy's file list is in pyproject.toml).
+LINT_PATHS = ai_bi_analytics tests frontend example
 
 .PHONY: api-key
 api-key:
@@ -67,15 +69,15 @@ api-key:
 .PHONY: format format-check lint test
 
 format:
-	uv run ruff format $(SOURCE) 
-	uv run ruff check $(SOURCE) --fix 
+	uv run ruff format $(LINT_PATHS)
+	uv run ruff check $(LINT_PATHS) --fix
 
 format-check:
-	uv run ruff format --check $(SOURCE)
+	uv run ruff format --check $(LINT_PATHS)
 
 lint:
-	uv run ruff check $(SOURCE) 
-	uv run mypy $(SOURCE) 
+	uv run ruff check $(LINT_PATHS)
+	uv run mypy
 
 test:
 	uv run pytest

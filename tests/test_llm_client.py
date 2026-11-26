@@ -1,7 +1,10 @@
 import pytest
-
 from ai_bi_analytics.core.config import settings
-from ai_bi_analytics.services.llm_client import BaseLLMClient, OpenAILLMClient, get_llm_client
+from ai_bi_analytics.services.llm_client import (
+    BaseLLMClient,
+    OpenAILLMClient,
+    get_llm_client,
+)
 
 
 def test_base_llm_client_complete_executes_abstract_body():
@@ -67,10 +70,12 @@ def test_get_llm_client_openai_provider(monkeypatch):
     class FakeOpenAILLMClient(OpenAILLMClient):
         def __init__(self) -> None:
             # Avoid calling the real OpenAILLMClient/OpenAI initialization.
-            self.client = None
+            self.client = None  # type: ignore[assignment]
 
     # Avoid triggering the real OpenAILLMClient init/OpenAI call.
-    monkeypatch.setattr("ai_bi_analytics.services.llm_client.OpenAILLMClient", FakeOpenAILLMClient)
+    monkeypatch.setattr(
+        "ai_bi_analytics.services.llm_client.OpenAILLMClient", FakeOpenAILLMClient
+    )
     monkeypatch.setattr(settings, "llm_provider", "openai")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 
@@ -86,4 +91,3 @@ def test_get_llm_client_unsupported_provider_raises(monkeypatch):
         get_llm_client()
 
     assert "Unsupported LLM provider" in str(exc.value)
-

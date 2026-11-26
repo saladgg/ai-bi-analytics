@@ -1,6 +1,3 @@
-from ai_bi_analytics.db.session import get_db
-
-
 def test_get_db_yields_and_closes(monkeypatch):
     import ai_bi_analytics.db.session as session_mod
 
@@ -22,4 +19,3 @@ def test_get_db_yields_and_closes(monkeypatch):
 
     gen.close()  # triggers the generator's `finally:` block
     assert dummy_session.closed is True
-

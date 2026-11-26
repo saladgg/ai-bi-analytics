@@ -7,11 +7,10 @@
 
 import os
 import random
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, Integer, String, Float
+
 from faker import Faker
+from sqlalchemy import Column, Float, Integer, String, create_engine, text
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # ──────────────────────────────────────────────────────────────────────────────
 #   CONFIGURATION - CHANGE THESE VALUES
@@ -27,7 +26,10 @@ DATABASE_URL = os.getenv(
 
 fake = Faker()
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
+
 
 class Product(Base):
     __tablename__ = "products"
@@ -55,14 +57,46 @@ def clear_table_if_exists(session):
 def generate_products(n=1000):
     print("Generating products.......")
     categories = [
-        "Smartphones", "Laptops", "Headphones", "Tablets", "Smart Watches",
-        "Monitors", "Keyboards", "Mice", "Speakers", "Cameras",
-        "External SSD", "Power Banks", "Chargers", "Cables", "Memory Cards",
-        "Gaming Consoles", "Drones", "Action Cameras", "Earbuds", "Fitness Trackers"
+        "Smartphones",
+        "Laptops",
+        "Headphones",
+        "Tablets",
+        "Smart Watches",
+        "Monitors",
+        "Keyboards",
+        "Mice",
+        "Speakers",
+        "Cameras",
+        "External SSD",
+        "Power Banks",
+        "Chargers",
+        "Cables",
+        "Memory Cards",
+        "Gaming Consoles",
+        "Drones",
+        "Action Cameras",
+        "Earbuds",
+        "Fitness Trackers",
     ]
 
-    brands = ["Apple", "Samsung", "Sony", "Dell", "HP", "Lenovo", "Asus", "Xiaomi",
-              "Anker", "Logitech", "JBL", "Bose", "Canon", "Nikon", "GoPro", "DJI"]
+    brands = [
+        "Apple",
+        "Samsung",
+        "Sony",
+        "Dell",
+        "HP",
+        "Lenovo",
+        "Asus",
+        "Xiaomi",
+        "Anker",
+        "Logitech",
+        "JBL",
+        "Bose",
+        "Canon",
+        "Nikon",
+        "GoPro",
+        "DJI",
+    ]
 
     products = []
 
@@ -72,20 +106,28 @@ def generate_products(n=1000):
 
         # Generate more realistic names depending on category
         if category == "Smartphones":
-            name = f"{brand} {random.choice(['Pro', 'Max', 'Ultra', 'Plus', 'Lite', '']) } {random.randint(11,15)}"
+            tier = random.choice(["Pro", "Max", "Ultra", "Plus", "Lite", ""])
+            name = f"{brand} {tier} {random.randint(11, 15)}"
         elif category == "Laptops":
-            name = f"{brand} {random.choice(['ProBook', 'Inspiron', 'Legion', 'ZenBook', 'MacBook', 'ThinkPad'])} {random.randint(13,17)}\""
+            line = random.choice(
+                ["ProBook", "Inspiron", "Legion", "ZenBook", "MacBook", "ThinkPad"]
+            )
+            name = f'{brand} {line} {random.randint(13, 17)}"'
         elif category in ["Headphones", "Earbuds"]:
-            name = f"{brand} {random.choice(['Noise Cancelling', 'Wireless', 'Pro', 'Sport', 'Studio'])}"
+            style = random.choice(
+                ["Noise Cancelling", "Wireless", "Pro", "Sport", "Studio"]
+            )
+            name = f"{brand} {style}"
         elif category == "Smart Watches":
-            name = f"{brand} Watch {random.choice(['Series', 'Ultra', 'Active', 'Fit'])} {random.randint(4,9)}"
+            series = random.choice(["Series", "Ultra", "Active", "Fit"])
+            name = f"{brand} Watch {series} {random.randint(4, 9)}"
         else:
             name = f"{brand} {category} {fake.word().capitalize()} Edition"
 
         # Make name cleaner
         name = " ".join(name.split())
 
-        # Revenue: very roughly realistic (monthly or lifetime depending on your context)
+        # Revenue: very roughly realistic (monthly or lifetime, per your context)
         if "iPhone" in name or "MacBook" in name or "Pro" in name:
             revenue = round(random.uniform(120000, 850000), 2)
         elif category in ["Smartphones", "Laptops", "Gaming Consoles"]:
@@ -95,11 +137,7 @@ def generate_products(n=1000):
         else:
             revenue = round(random.uniform(3000, 65000), 2)
 
-        products.append({
-            "name": name[:255],
-            "category": category,
-            "revenue": revenue
-        })
+        products.append({"name": name[:255], "category": category, "revenue": revenue})
 
     return products
 

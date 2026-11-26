@@ -313,7 +313,8 @@ def validate_sql(
         _check_redactions(tree, redacted_columns)
 
     if max_rows is not None:
-        assert isinstance(tree, exp.Query)  # guaranteed by READ_ROOTS
+        if not isinstance(tree, exp.Query):  # pragma: no cover - READ_ROOTS
+            raise UnsafeSQLError("Only SELECT statements are allowed.")
         tree = _apply_row_cap(tree, max_rows)
 
     return tree.sql(dialect=DIALECT, comments=False)

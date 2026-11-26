@@ -1,7 +1,8 @@
-import streamlit as st
 import pandas as pd
-from api import call_backend
+import streamlit as st
 from utils import auto_chart
+
+from api import call_backend
 
 st.set_page_config(page_title="AI BI Dashboard", layout="wide")
 
@@ -9,7 +10,7 @@ st.title("📊 AI Business Intelligence Dashboard")
 
 question = st.text_input(
     "Ask a business question:",
-    placeholder="e.g. What are the top 3 products by revenue?"
+    placeholder="e.g. What are the top 3 products by revenue?",
 )
 
 if st.button("Run Query") and question:
@@ -25,7 +26,7 @@ if "res" in st.session_state:
     res = st.session_state["res"]
 
     df = pd.DataFrame(res["result"])
-    
+
     # RESULTS TABLE SUMMARY
     st.subheader("📋 Results")
     st.caption("🧠 Generated SQL")
@@ -37,7 +38,7 @@ if "res" in st.session_state:
     if fig:
         st.subheader("📈 Visualization")
         st.plotly_chart(fig, use_container_width=True)
-    
-    # EXPLANATION:    
+
+    # EXPLANATION:
     st.subheader("💡 Explanation")
     st.write(res["explanation"])

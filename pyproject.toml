@@ -77,12 +77,21 @@ ai_bi_analytics = ["core/lua/*.lua"]
 include = [
     "ai_bi_analytics/**/*.py",
     "tests/**/*.py",
+    "frontend/**/*.py",
+    "example/**/*.py",
 ]
 src = ["ai_bi_analytics"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B"]
+# S = flake8-bandit security rules (audit CI-1's SAST item).
+select = ["E", "F", "I", "B", "S"]
 ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use throwaway credentials, and build fixture SQL.
+"tests/**/*.py" = ["S101", "S105", "S106", "S608"]
+# Bootstrap scripts shell out to psql and generate fake data.
+"example/**/*.py" = ["S311", "S603", "S607", "S608"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -95,7 +104,9 @@ line-ending = "auto"
 [tool.mypy]
 plugins = "pydantic.mypy"
 python_version = "3.14"
-packages = ["ai_bi_analytics"]
+files = ["ai_bi_analytics", "tests", "frontend", "example"]
+# The Streamlit app imports its siblings as top-level modules.
+mypy_path = ["frontend"]
 explicit_package_bases = true
 disable_error_code = [
   "var-annotated", "import-untyped",

@@ -118,7 +118,7 @@ docker-down:
 .PHONY: build
 build:
 	rm -rf dist
-	uv run python -m build
+	uv build
 
 .PHONY: tempTarget
 tempTarget:

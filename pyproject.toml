@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-bi-analytics"
-version = "v1.0.0"
+version = "1.0.0"
 description = "AI-powered Business Intelligence backend built with FastAPI and PostgreSQL."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -32,7 +32,6 @@ dependencies = [
   "psycopg2-binary>=2.9.11",
   "openai>=2.21.0",
   "python-dotenv>=1.2.1",
-  "build>=1.4.0",
   "redis>=7.2.0",
   "opentelemetry-instrumentation-fastapi>=0.61b0",
   "opentelemetry-sdk>=1.40.0",
@@ -65,8 +64,11 @@ Documentation = "https://github.com/saladgg/ai-bi-analytics/docs" # todo
 Changelog = "https://github.com/saladgg/ai-bi-analytics/releases"
 
 
-[tool.setuptools]
-packages = ["ai_bi_analytics"]
+[tool.setuptools.packages.find]
+include = ["ai_bi_analytics*"]
+
+[tool.setuptools.package-data]
+ai_bi_analytics = ["core/lua/*.lua"]
 
 [tool.ruff]
 include = [
@@ -121,7 +123,7 @@ url = "https://pypi.org/simple"
 [tool.semantic_release]
 commit_parser = "conventional"
 version_toml = [
-    "pyproject.toml:project.version:tf"
+    "pyproject.toml:project.version:nf"
 ]
 branch = "main"
 build_command = "python -m build"

@@ -1,0 +1,36 @@
+# Secrets & local config — must never reach an image layer
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Local environments, caches, build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+*.db
+
+# VCS, IDE, tooling
+.git/
+.github/
+.idea/
+.vscode/
+.qodo/
+todos.md
+
+# Not needed by the API image
+tests/
+docs/
+frontend/
+example/

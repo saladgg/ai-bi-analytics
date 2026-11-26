@@ -21,7 +21,6 @@ htmlcov/
 .poetry/
 
 # Docker
-*.dockerignore
 docker-compose.override.yml
 
 # Secrets & local config
@@ -47,5 +46,4 @@ dist/
 # New
 app/gen_test_table_data.py
 todos.md
-uv.lock
 test.db

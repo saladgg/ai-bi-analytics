@@ -13,6 +13,9 @@ an AST (sqlglot, Postgres dialect) and accepted only if it is:
   settings, sequences, dblink, XML query helpers),
 - reading only known tables in the queryable schema, never system
   catalogs,
+- returning at most ``max_rows`` rows: the query's LIMIT is rewritten to
+  ``max_rows + 1`` unless it already asks for fewer (audit SEC-5); the
+  extra row tells the executor the result was truncated,
 - not touching redacted columns: no explicit reference, no ``*`` and no
   whole-row reference on a table that has them (audit SEC-7).
 
@@ -211,12 +214,37 @@ def _check_redactions(
             )
 
 
+def _literal_row_limit(node: exp.Expression | None) -> int | None:
+    if isinstance(node, exp.Limit):
+        value = node.expression
+    elif isinstance(node, exp.Fetch):
+        value = node.args.get("count")
+    else:
+        return None
+    if isinstance(value, exp.Literal) and value.is_int:
+        return int(value.name)
+    return None
+
+
+def _apply_row_cap(tree: exp.Query, max_rows: int) -> exp.Query:
+    """
+    Caps the outermost query. A literal LIMIT/FETCH within the cap is kept;
+    anything else (none, larger, ALL, an expression) becomes
+    ``LIMIT max_rows + 1``. OFFSET is preserved.
+    """
+    existing = _literal_row_limit(tree.args.get("limit"))
+    if existing is not None and existing <= max_rows:
+        return tree
+    return tree.limit(max_rows + 1)
+
+
 def validate_sql(
     sql: str,
     allowed_tables: Collection[str] | None = None,
     *,
     schema: str = DEFAULT_SCHEMA,
     redacted_columns: Mapping[str, Collection[str]] | None = None,
+    max_rows: int | None = None,
 ) -> str:
     """
     Validates LLM-generated SQL and returns the canonical query to execute.
@@ -229,6 +257,7 @@ def validate_sql(
         schema: The queryable schema; table references may be unqualified
             or qualified with it.
         redacted_columns: table -> column names the query may not touch.
+        max_rows: Row cap. ``None`` leaves the query's own LIMIT alone.
 
     Returns:
         str: SQL regenerated from the validated AST (comments removed).
@@ -282,5 +311,9 @@ def validate_sql(
 
     if redacted_columns:
         _check_redactions(tree, redacted_columns)
+
+    if max_rows is not None:
+        assert isinstance(tree, exp.Query)  # guaranteed by READ_ROOTS
+        tree = _apply_row_cap(tree, max_rows)
 
     return tree.sql(dialect=DIALECT, comments=False)

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from ai_bi_analytics.api.deps import verify_api_key
+from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.rate_limiter import enforce_rate_limit
 from ai_bi_analytics.db.session import get_db
 from ai_bi_analytics.schemas.query import QueryRequest, QueryResponse
@@ -53,8 +54,9 @@ def query_database(
         allowed_tables=scope.tables,
         schema=scope.schema,
         redacted_columns=scope.redacted,
+        max_rows=settings.max_result_rows,
     )
-    result = execute_query(db, sql)
+    result = execute_query(db, sql, max_rows=settings.max_result_rows)
     explanation = explain_result(payload.question, sql, result)
 
     logger.info(
@@ -62,13 +64,16 @@ def query_database(
         extra={
             "question": payload.question,
             "sql": sql,
-            "row_count": len(result),
+            "row_count": len(result.rows),
+            "truncated": result.truncated,
         },
     )
 
     query_response = QueryResponse(
         sql=sql,
-        result=result,
+        result=result.rows,
+        row_count=len(result.rows),
+        truncated=result.truncated,
         explanation=explanation,
     )
 

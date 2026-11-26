@@ -32,6 +32,10 @@ class Settings(BaseSettings):
         rate_limit_requests (int): Requests allowed per client per window.
         rate_limit_window_seconds (int): Sliding-window length.
         max_question_length (int): Longest accepted question, in characters.
+        max_result_rows (int): Most rows a query may return; more are
+            truncated (the database stops at the cap).
+        explanation_sample_rows (int): Rows sent to the LLM for explanation.
+        cache_max_bytes (int): Responses larger than this aren't cached.
         queryable_schema (str): The one schema the LLM sees and queries.
         queryable_tables (list[str]): Tables/views the LLM may use. Empty
             means every table in ``queryable_schema`` (development only).
@@ -64,6 +68,14 @@ class Settings(BaseSettings):
     redacted_columns: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="REDACTED_COLUMNS"
     )
+
+    max_result_rows: int = Field(
+        default=1000, ge=1, le=100_000, alias="MAX_RESULT_ROWS"
+    )
+    explanation_sample_rows: int = Field(
+        default=20, ge=1, le=500, alias="EXPLANATION_SAMPLE_ROWS"
+    )
+    cache_max_bytes: int = Field(default=512_000, ge=0, alias="CACHE_MAX_BYTES")
 
     max_question_length: int = Field(
         default=500, ge=10, le=4000, alias="MAX_QUESTION_LENGTH"

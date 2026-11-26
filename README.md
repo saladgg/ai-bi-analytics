@@ -264,6 +264,9 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `QUERYABLE_TABLES` | empty | Comma-separated tables/views the LLM may use. **Required outside `ENV=development`**; empty means every table in the schema |
 | `REDACTED_COLUMNS` | empty | `table.column` or bare `column` entries hidden from the LLM and rejected by the guard (including `SELECT *` on those tables) |
 | `MAX_QUESTION_LENGTH` | `500` | Longest accepted question, in characters |
+| `MAX_RESULT_ROWS` | `1000` | Most rows per query; the guard caps `LIMIT`, and responses flag `truncated` |
+| `EXPLANATION_SAMPLE_ROWS` | `20` | Rows sent to the LLM for the explanation |
+| `CACHE_MAX_BYTES` | `512000` | Larger responses aren't cached |
 | `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
 | `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |
@@ -304,11 +307,15 @@ Response:
     {"product_name": "Product B", "total_revenue":  98000},
     {"product_name": "Product C", "total_revenue":  87000}
   ],
+  "row_count": 3,
+  "truncated": false,
   "explanation": "The top three products by revenue are Product A, Product B, and Product C based on the total sales recorded in the database."
 }
 ```
 
-`sql` is the guard's canonical form of the generated query, which is exactly what was executed.
+`sql` is the guard's canonical form of the generated query, which is exactly what was executed. Results are capped at `MAX_RESULT_ROWS`: a query without a smaller `LIMIT` gets `LIMIT MAX_RESULT_ROWS + 1`, and `truncated: true` means more rows existed than were returned.
+
+Errors return `{"detail", "code", "request_id"}`: `422` for a rejected or failed query or an invalid question, `502` if the LLM is unavailable, `503` if Postgres or Redis is unavailable, and `504` if a query timed out. Every response carries an `X-Request-ID` header (one you send is reused if it's safe), and the same id appears in the server logs.
 
 Every `/api/query` response carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`. Over the limit, the API returns **429** with `Retry-After`.
 

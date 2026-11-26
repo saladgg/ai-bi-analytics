@@ -51,11 +51,15 @@ class QueryResponse(BaseModel):
     Structured response returned to the client.
 
     Attributes:
-        sql (str): Generated SQL query.
-        result (list[dict]): Query result rows.
+        sql (str): The executed SQL (the guard's canonical form).
+        result (list[dict]): Query result rows, at most MAX_RESULT_ROWS.
+        row_count (int): Number of rows in ``result``.
+        truncated (bool): The query produced more rows than were returned.
         explanation (str): AI-generated explanation.
     """
 
     sql: str
     result: list[dict]
+    row_count: int
+    truncated: bool
     explanation: str

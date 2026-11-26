@@ -11,6 +11,7 @@ from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.schemas.query import QueryRequest
 from ai_bi_analytics.services import explanation, nl_to_sql
 from ai_bi_analytics.services.prompting import untrusted_block
+from ai_bi_analytics.services.query_executor import QueryResult
 from pydantic import ValidationError
 
 
@@ -124,7 +125,7 @@ def test_explanation_prompt_separates_rules_from_rows(llm):
         }
     ]
 
-    explanation.explain_result("q?", "SELECT 1", rows)
+    explanation.explain_result("q?", "SELECT 1", QueryResult(rows))
 
     call = llm.calls[0]
     assert call["system"] == explanation.EXPLANATION_RULES

@@ -67,7 +67,9 @@ def row_count(owner_engine) -> int:
 
 
 def test_select_works(readonly_session):
-    rows = execute_query(readonly_session, f"SELECT id, name FROM {TABLE} ORDER BY id")
+    rows = execute_query(
+        readonly_session, f"SELECT id, name FROM {TABLE} ORDER BY id"
+    ).rows
 
     assert rows == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
 
@@ -160,7 +162,7 @@ def test_guard_canonical_sql_executes_on_postgres(readonly_session, sql, expecte
 
     canonical = validate_sql(sql, allowed_tables={TABLE})
 
-    assert execute_query(readonly_session, canonical) == expected
+    assert execute_query(readonly_session, canonical).rows == expected
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +243,7 @@ def test_scope_and_guard_on_dedicated_schema(scoped_session, analytics_schema):
         schema=scope.schema,
         redacted_columns=scope.redacted,
     )
-    assert execute_query(scoped_session, sql) == [
+    assert execute_query(scoped_session, sql).rows == [
         {"city": "Nairobi", "n": 2},
         {"city": "Mombasa", "n": 1},
     ]
@@ -263,7 +265,7 @@ def test_column_privileges_enforce_redaction_in_postgres(
             )
         )
     try:
-        assert execute_query(scoped_session, "SELECT city FROM customers LIMIT 1")
+        assert execute_query(scoped_session, "SELECT city FROM customers LIMIT 1").rows
         with pytest.raises(DBAPIError, match="permission denied"):
             execute_query(scoped_session, "SELECT email FROM customers")
         with pytest.raises(DBAPIError, match="permission denied"):
@@ -273,3 +275,17 @@ def test_column_privileges_enforce_redaction_in_postgres(
             conn.execute(
                 text(f"GRANT SELECT ON {analytics_schema}.customers TO {ro_user}")
             )
+
+
+def test_row_cap_truncates_on_postgres(readonly_session):
+    """Audit SEC-5: the guard's LIMIT stops Postgres at cap + 1 rows and
+    the executor reports truncation."""
+    from ai_bi_analytics.services.sql_validator import validate_sql
+
+    sql = validate_sql(
+        f"SELECT id FROM {TABLE} ORDER BY id", allowed_tables={TABLE}, max_rows=1
+    )
+    result = execute_query(readonly_session, sql, max_rows=1)
+
+    assert sql.endswith("LIMIT 2")
+    assert result.rows == [{"id": 1}] and result.truncated is True

@@ -32,7 +32,7 @@ unless a dependency is noted.
 
 ## Phase 0 — Stop the bleeding (security + broken build) 🔴 ✅ (one decision open)
 
-- [x] **SEC-2 — Enforce read-only at the database.** `34df8f0`
+- [x] **SEC-2 — Enforce read-only at the database.** `2c6eb2e`
   - [x] `db/session.py` `build_engine_kwargs`: Postgres connections start
     with `default_transaction_read_only=on`, `statement_timeout` and
     `idle_in_transaction_session_timeout` (new settings
@@ -57,7 +57,7 @@ unless a dependency is noted.
     plus manual role creation for pre-existing compose volumes).
   - [x] `tests/integration/test_postgres_readonly.py`, verified on
     Postgres 18.
-- [x] **SEC-1 + CQ-1 — AST guard.** `8c8f839`
+- [x] **SEC-1 + CQ-1 — AST guard.** `d0b3557`
   - [x] `sqlglot` postgres dialect; exactly one statement; root is `Select`
     or a set operation (`WITH` parses as a `Select` with CTEs). Empty and
     comment-only trailers (`;;`, `; -- done`) don't count as statements.
@@ -78,7 +78,7 @@ unless a dependency is noted.
   - [x] Corpus in `tests/test_sql_validator.py`: every verified bypass,
     nested and CTE variants, catalogs, unknown tables, and false-positive
     regressions.
-- [x] **SEC-3 — Make the rate limiter actually limit.** `4d8f153`
+- [x] **SEC-3 — Make the rate limiter actually limit.** `c33e2cf`
   - [x] Lua returns `{allowed, count, retry_after_ms}`, uses Redis `TIME`,
     ms scores, unique `now_ms:uuid` members, and `PEXPIRE`.
   - [x] Python branches on `allowed`. 429s carry `Retry-After` and
@@ -94,13 +94,13 @@ unless a dependency is noted.
     dependency).
   - [x] `fakeredis[lua]` runs the real script in tests; the route also
     exercises the real cache module now. Re-verified on `redis-server`.
-- [x] **OPS-1 — Clean-clone build, no secrets in images.** `7d80d8a`
+- [x] **OPS-1 — Clean-clone build, no secrets in images.** `02b54a6`
   - [x] `uv.lock` committed; `uv.lock` and `*.dockerignore` removed from
     `.gitignore`.
   - [x] `.dockerignore` added.
   - [x] Verified: a fresh `git clone` builds, and a canary `.env` is absent
     from the image.
-- [x] **PKG-1 — Ship an importable wheel.** `7d80d8a`
+- [x] **PKG-1 — Ship an importable wheel.** `02b54a6`
   - [x] Package discovery and Lua package-data.
   - [x] `build` removed from runtime deps; `version = "1.0.0"` (PSR
     `version_toml` switched to number format `:nf` so it stays PEP 440).

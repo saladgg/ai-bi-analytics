@@ -22,7 +22,7 @@ def test_query_success(client, sample_products, mock_llm):
         json={"question": "show all products"},
         headers={"x-api-key": "test"},
     )
-    
+
     assert response.status_code == 200
 
     data = response.json()
@@ -63,7 +63,7 @@ def test_query_invalid_sql_blocked(client, monkeypatch):
     """
 
     class FakeLLM:
-        def complete(self, prompt):
+        def complete(self, prompt, system=None):
             return "DROP TABLE products;"
 
     monkeypatch.setattr(
@@ -76,8 +76,11 @@ def test_query_invalid_sql_blocked(client, monkeypatch):
         json={"question": "delete everything"},
     )
 
-    assert response.status_code == 400
-    assert "only select" in response.text.lower()
+    assert response.status_code == 422
+    body = response.json()
+    assert "only select" in body["detail"].lower()
+    assert body["code"] == "unsafe_sql"
+    assert body["request_id"] == response.headers["x-request-id"]
 
 
 def test_query_missing_api_key(db_session):
@@ -99,5 +102,5 @@ def test_query_missing_api_key(db_session):
             headers={},  # explicitly empty
         )
 
-    # Accept both depending on implementation
-    assert response.status_code in (401, 403, 422)
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "APIKey"

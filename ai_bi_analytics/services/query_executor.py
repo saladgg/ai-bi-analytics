@@ -4,11 +4,34 @@ Query execution service.
 Executes validated SQL queries against the database.
 """
 
+from dataclasses import dataclass
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-def execute_query(db: Session, sql: str) -> list[dict]:
+@dataclass(frozen=True)
+class QueryResult:
+    rows: list[dict]
+    # True when the query produced more than ``max_rows`` and the extra
+    # rows were dropped (audit SEC-5).
+    truncated: bool = False
+
+
+def _fetch(db: Session, sql: str, max_rows: int | None) -> QueryResult:
+    result = db.execute(text(sql))
+    if max_rows is None:
+        return QueryResult([dict(row._mapping) for row in result.fetchall()])
+    # Never materialise more than one row past the cap, whatever the SQL
+    # says; the guard's LIMIT is the first bound, this is the second.
+    rows = result.fetchmany(max_rows + 1)
+    return QueryResult(
+        rows=[dict(row._mapping) for row in rows[:max_rows]],
+        truncated=len(rows) > max_rows,
+    )
+
+
+def execute_query(db: Session, sql: str, max_rows: int | None = None) -> QueryResult:
     """
     Executes a validated SQL query.
 
@@ -21,20 +44,20 @@ def execute_query(db: Session, sql: str) -> list[dict]:
     Args:
         db (Session): SQLAlchemy session.
         sql (str): Safe SQL query.
+        max_rows (int | None): Most rows to return; ``truncated`` is set
+            when the query produced more.
 
     Returns:
-        list[dict]: Result rows as dictionaries.
+        QueryResult: Rows as dictionaries, plus the truncation flag.
     """
 
     if db.get_bind().dialect.name != "postgresql":
-        result = db.execute(text(sql))
-        return [dict(row._mapping) for row in result.fetchall()]
+        return _fetch(db, sql, max_rows)
 
     # SET TRANSACTION must be the first statement of its transaction.
     db.rollback()
     try:
         db.execute(text("SET TRANSACTION READ ONLY"))
-        result = db.execute(text(sql))
-        return [dict(row._mapping) for row in result.fetchall()]
+        return _fetch(db, sql, max_rows)
     finally:
         db.rollback()

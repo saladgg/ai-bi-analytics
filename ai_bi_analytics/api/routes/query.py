@@ -1,10 +1,12 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from ai_bi_analytics.api.deps import verify_api_key
+from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.rate_limiter import enforce_rate_limit
+from ai_bi_analytics.core.security import Principal
 from ai_bi_analytics.db.session import get_db
 from ai_bi_analytics.schemas.query import QueryRequest, QueryResponse
 from ai_bi_analytics.services.cache import (
@@ -15,10 +17,7 @@ from ai_bi_analytics.services.cache import (
 from ai_bi_analytics.services.explanation import explain_result
 from ai_bi_analytics.services.nl_to_sql import generate_sql
 from ai_bi_analytics.services.query_executor import execute_query
-from ai_bi_analytics.services.schema_loader import (
-    load_schema_metadata,
-    load_table_names,
-)
+from ai_bi_analytics.services.schema_loader import load_query_scope
 from ai_bi_analytics.services.sql_validator import validate_sql
 
 logger = logging.getLogger(__name__)
@@ -32,48 +31,57 @@ def query_database(
     response: Response,
     payload: QueryRequest,
     db: Session = Depends(get_db),  # noqa B008
-    _: None = Depends(verify_api_key),
+    principal: Principal = Depends(verify_api_key),
 ):
     """
     Full NL → SQL → Execute pipeline.
     """
-    rate_limit = enforce_rate_limit(request)
+    rate_limit = enforce_rate_limit(request, f"client:{principal.client_id}")
     response.headers.update(rate_limit.headers())
-    try:
-        schema_description = load_schema_metadata(db)
-        cache_key = generate_cache_key(payload.question + "|" + schema_description)
-        cached = get_cached_response(cache_key)
-        if cached:
-            return cached
 
-        generated_sql = generate_sql(payload.question, schema_description)
-        # Execute the guard's canonical SQL, never the raw model output.
-        sql = validate_sql(generated_sql, allowed_tables=load_table_names(db))
-        result = execute_query(db, sql)
-        explanation = explain_result(payload.question, sql, result)
+    # No blanket try/except: typed errors and DB/Redis failures are mapped
+    # to client-safe responses by the handlers in main.py (audit SEC-4).
+    scope = load_query_scope(db)
+    cache_key = generate_cache_key(payload.question + "|" + scope.description)
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
 
-        logger.info(
-            "Query executed",
-            extra={
-                "question": payload.question,
-                "sql": sql,
-                "row_count": len(result),
-            },
-        )
+    generated_sql = generate_sql(payload.question, scope.description)
+    # Execute the guard's canonical SQL, never the raw model output. The
+    # model saw exactly `scope`; the guard enforces the same scope.
+    sql = validate_sql(
+        generated_sql,
+        allowed_tables=scope.tables,
+        schema=scope.schema,
+        redacted_columns=scope.redacted,
+        max_rows=settings.max_result_rows,
+    )
+    result = execute_query(db, sql, max_rows=settings.max_result_rows)
+    explanation = explain_result(payload.question, sql, result)
 
-        query_response = QueryResponse(
-            sql=sql,
-            result=result,
-            explanation=explanation,
-        )
+    logger.info(
+        "Query executed",
+        extra={
+            "client_id": principal.client_id,
+            "question": payload.question,
+            "sql": sql,
+            "row_count": len(result.rows),
+            "truncated": result.truncated,
+        },
+    )
 
-        set_cached_response(
-            cache_key,
-            query_response.model_dump(),
-        )
+    query_response = QueryResponse(
+        sql=sql,
+        result=result.rows,
+        row_count=len(result.rows),
+        truncated=result.truncated,
+        explanation=explanation,
+    )
 
-        return query_response
+    set_cached_response(
+        cache_key,
+        query_response.model_dump(mode="json"),
+    )
 
-    except Exception as exc:
-        logger.error("Request failure: %s", str(exc))
-        raise HTTPException(status_code=400, detail=str(exc))  # noqa B008
+    return query_response

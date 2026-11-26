@@ -17,7 +17,11 @@ help:
 	@echo "  make format         Format code"
 	@echo "  make format-check   Check formatting without changing files (CI)"
 	@echo "  make test           Run tests (fails under 100% line+branch coverage)"
+	@echo "  make audit          Audit dependencies for known vulnerabilities"
+	@echo "  make hooks-install  Install pre-commit + pre-push hooks (once per clone)"
+	@echo "  make hooks-run      Run every hook (both stages) on all files"
 	@echo "  make docker-build   Build Docker image"
+	@echo "  make api-key CLIENT=<id>  Generate a client API key + API_KEYS entry"
 
 
 
@@ -57,22 +61,43 @@ update:
 # ----------------------------------------------------------
 
 SOURCE = ai_bi_analytics
+# Everything ruff formats and lints (mypy's file list is in pyproject.toml).
+LINT_PATHS = ai_bi_analytics tests frontend example
+
+.PHONY: api-key
+api-key:
+	@test -n "$(CLIENT)" || (echo "usage: make api-key CLIENT=<client_id>" && exit 2)
+	uv run python -m ai_bi_analytics.core.security $(CLIENT)
 
 .PHONY: format format-check lint test
 
 format:
-	uv run ruff format $(SOURCE) 
-	uv run ruff check $(SOURCE) --fix 
+	uv run ruff format $(LINT_PATHS)
+	uv run ruff check $(LINT_PATHS) --fix
 
 format-check:
-	uv run ruff format --check $(SOURCE)
+	uv run ruff format --check $(LINT_PATHS)
 
 lint:
-	uv run ruff check $(SOURCE) 
-	uv run mypy $(SOURCE) 
+	uv run ruff check $(LINT_PATHS)
+	uv run mypy
 
 test:
 	uv run pytest
+
+.PHONY: hooks-install hooks-run
+hooks-install:
+	uv run pre-commit install --install-hooks
+
+hooks-run:
+	uv run pre-commit run --all-files
+	uv run pre-commit run --all-files --hook-stage pre-push
+
+.PHONY: audit
+audit:
+	# OSV batches its queries; the default PyPI service issues one request
+	# per installed package and times out intermittently in CI.
+	uv run pip-audit -s osv --timeout 60
 
 # ----------------------------------------------------------
 # Run Application

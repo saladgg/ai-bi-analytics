@@ -163,7 +163,7 @@ class RecordingSession:
 def test_postgres_query_runs_in_read_only_transaction():
     db = RecordingSession()
 
-    assert execute_query(db, "SELECT 1") == []
+    assert execute_query(db, "SELECT 1").rows == []
     assert db.calls == ["ROLLBACK", "SET TRANSACTION READ ONLY", "SELECT 1", "ROLLBACK"]
 
 

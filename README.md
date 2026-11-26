@@ -92,16 +92,16 @@ Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
 ## Features
 
 ### NL → SQL with strict guardrails
-Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglot), Postgres dialect) and accepted only if it is exactly one read query (`SELECT`, `UNION`, `WITH … SELECT`) with no write, DDL, `COPY`, `SELECT INTO` or row lock anywhere in the tree, no dangerous functions (`pg_sleep`, `pg_read_file`, `lo_*`, `dblink`, `set_config`, …), and only tables that exist in the default schema (never system catalogs). The API executes SQL **regenerated from the validated AST**, not the raw model output, so what was checked is exactly what runs. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
+Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglot), Postgres dialect) and accepted only if it is exactly one read query (`SELECT`, `UNION`, `WITH … SELECT`) with no write, DDL, `COPY`, `SELECT INTO` or row lock anywhere in the tree, no dangerous functions (`pg_sleep`, `pg_read_file`, `lo_*`, `dblink`, `set_config`, …), and only tables in the configured query scope (`QUERYABLE_SCHEMA` / `QUERYABLE_TABLES`, never system catalogs) without touching `REDACTED_COLUMNS`. The API executes SQL **regenerated from the validated AST**, not the raw model output, so what was checked is exactly what runs. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
 
 ### Dynamic schema introspection
-Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No hard-coded schema strings means no schema drift between code and prompts.
+Tables and views in the queryable schema are reflected at request time via SQLAlchemy, narrowed to `QUERYABLE_TABLES` with `REDACTED_COLUMNS` removed, and passed to the LLM. The guard enforces that same scope, so the model is never shown anything it can't query, and the reverse. No hard-coded schema strings means no schema drift between code and prompts.
 
 ### Redis distributed cache
 Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
 
 ### Sliding-window rate limiting
-Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the connecting address. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
+Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
 
 ### Observability
 - **Logging** — request lifecycle, SQL and errors via the standard `logging` config in [`core/logging_config.py`](ai_bi_analytics/core/logging_config.py).
@@ -110,7 +110,7 @@ Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rat
 Not wired yet (tracked as OPS-2 in [`docs/todos`](docs/todos/01_general_audit_todos.md)): an OTLP exporter, DB/Redis/LLM spans, trace ids in log lines, JSON logs, and metrics.
 
 ### API-key auth
-Static `x-api-key` header validated by [`ai_bi_analytics/api/deps.py`](ai_bi_analytics/api/deps.py). Suitable for internal/service-to-service use; swap in OAuth/JWT for end-user auth.
+Each client sends its own key in the `x-api-key` header. The server stores only SHA-256 hashes (`API_KEYS=client_id:hash,...`), compares in constant time against every entry, and identifies the caller for rate limiting and logs. To rotate a key, list the new entry next to the old one, then remove the old. Missing or unknown keys get `401`. Generate a key with `make api-key CLIENT=<id>`. See [`core/security.py`](ai_bi_analytics/core/security.py). Suitable for internal and service-to-service use; swap in OAuth/JWT for end-user auth.
 
 ### Streamlit frontend (demo)
 A minimal Streamlit UI ships under [`frontend/`](frontend/) for exploring the API without writing curl commands. **Demo only** — see [frontend/README.md](frontend/README.md) for limitations.
@@ -255,11 +255,19 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `API_KEY` | — (required) | Static key expected in the `x-api-key` header |
+| `API_KEYS` | empty | `client_id:sha256(key)` entries, one per client (generate with `make api-key CLIENT=<id>`) |
+| `API_KEY` | empty | Legacy single key, authenticates as client `default`. Outside development: 32+ chars, not a placeholder. One of `API_KEYS`/`API_KEY` is required |
 | `DATABASE_URL` | — (required) | SQLAlchemy URL; must use a read-only role |
 | `ENV` | `development` | Anything else enforces the database role check at startup |
 | `DB_STATEMENT_TIMEOUT_MS` | `5000` | Server-side cap per query |
 | `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | `10000` | Server-side cap on idle open transactions |
+| `QUERYABLE_SCHEMA` | `public` | The one schema the LLM sees and queries (also the connection's `search_path`) |
+| `QUERYABLE_TABLES` | empty | Comma-separated tables/views the LLM may use. **Required outside `ENV=development`**; empty means every table in the schema |
+| `REDACTED_COLUMNS` | empty | `table.column` or bare `column` entries hidden from the LLM and rejected by the guard (including `SELECT *` on those tables) |
+| `MAX_QUESTION_LENGTH` | `500` | Longest accepted question, in characters |
+| `MAX_RESULT_ROWS` | `1000` | Most rows per query; the guard caps `LIMIT`, and responses flag `truncated` |
+| `EXPLANATION_SAMPLE_ROWS` | `20` | Rows sent to the LLM for the explanation |
+| `CACHE_MAX_BYTES` | `512000` | Larger responses aren't cached |
 | `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
 | `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |
@@ -270,7 +278,7 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 
 ## API usage
 
-All endpoints require a static `x-api-key` header that matches `API_KEY` in `.env`.
+`/api/query` requires an `x-api-key` header holding a client key (see [API-key auth](#api-key-auth)); `/api/health` is open.
 
 ### Health
 
@@ -300,11 +308,15 @@ Response:
     {"product_name": "Product B", "total_revenue":  98000},
     {"product_name": "Product C", "total_revenue":  87000}
   ],
+  "row_count": 3,
+  "truncated": false,
   "explanation": "The top three products by revenue are Product A, Product B, and Product C based on the total sales recorded in the database."
 }
 ```
 
-`sql` is the guard's canonical form of the generated query, which is exactly what was executed.
+`sql` is the guard's canonical form of the generated query, which is exactly what was executed. Results are capped at `MAX_RESULT_ROWS`: a query without a smaller `LIMIT` gets `LIMIT MAX_RESULT_ROWS + 1`, and `truncated: true` means more rows existed than were returned.
+
+Errors return `{"detail", "code", "request_id"}`: `422` for a rejected or failed query or an invalid question, `502` if the LLM is unavailable, `503` if Postgres or Redis is unavailable, and `504` if a query timed out. Every response carries an `X-Request-ID` header (one you send is reused if it's safe), and the same id appears in the server logs.
 
 Every `/api/query` response carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`. Over the limit, the API returns **429** with `Retry-After`.
 
@@ -315,15 +327,34 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc` once the API is ru
 ## Development workflow
 
 ```bash
-make format      # ruff format + ruff --fix
-make lint        # ruff check + mypy
-make test        # pytest with coverage
-make clean       # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
+make format        # ruff format + ruff --fix (package, tests, frontend, example)
+make format-check  # the same, check-only (what CI runs)
+make lint          # ruff check (incl. bandit-style S rules) + mypy
+make test          # pytest; fails below 100% line + branch coverage
+make audit         # pip-audit: known vulnerabilities in locked dependencies
+make api-key CLIENT=<id>   # generate a client key and its API_KEYS entry
+make clean         # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
 ```
 
-Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`. The Coveralls upload isn't wired into CI yet (CI-1).
+### Git hooks (run once per clone)
 
-The integration suite in [`tests/integration/`](tests/integration/) checks the read-only guarantees against a real PostgreSQL. It is skipped unless both URLs are set, e.g. against the compose Postgres:
+```bash
+make hooks-install   # installs both the pre-commit and pre-push hooks
+make hooks-run       # run every hook against all files
+```
+
+Hooks catch locally what CI would fail on ([`.pre-commit-config.yaml`](.pre-commit-config.yaml)):
+
+- **On commit** (changed files, a few seconds): file hygiene, private-key detection, gitleaks, actionlint for workflows, and ruff format, ruff lint and mypy from the project venv (so they can't drift from CI's versions).
+- **On push**: `make audit` and the full test suite with the 100% coverage gate. The tests run with `SKIP_DOTENV=1` and CI's environment, so your local `.env` can't make the result differ from CI.
+
+To bypass the hooks in an emergency, use `git commit --no-verify` or `git push --no-verify`. CI still runs everything.
+
+### Tests
+
+Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`.
+
+The integration suite in [`tests/integration/`](tests/integration/) runs against a real PostgreSQL. It covers read-only enforcement, timeouts, the guard's canonical SQL, the query scope on a dedicated schema, column privileges and the row cap. CI runs it on every PR. Locally it is skipped unless both URLs are set, e.g. against the compose Postgres:
 
 ```bash
 TEST_POSTGRES_OWNER_URL=postgresql+psycopg2://test_user:test_pwd@localhost:5433/ai_bi_db \
@@ -346,11 +377,17 @@ Versioning and changelog are automated via [python-semantic-release](https://pyt
 
 Releases are fully automated and gated on CI:
 
-1. A PR runs CI (format check, lint + mypy, tests at 100% coverage, wheel smoke test).
+1. A PR runs CI ([`ci.yaml`](.github/workflows/ci.yaml), every action SHA-pinned):
+   - format check, lint and mypy across the repo
+   - dependency audit
+   - tests at 100% line and branch coverage, including the Postgres integration suite
+   - wheel smoke test
+   - Docker image build with a Trivy scan (fixable CRITICAL/HIGH CVEs fail the build)
+   - gitleaks secret scan over the full history
 2. On merge, CI runs again on `main`.
 3. Only if that run succeeds does [`release.yaml`](.github/workflows/release.yaml) run semantic-release, on the exact commit CI validated. It bumps the version, re-locks `uv.lock`, updates the changelog, tags, and publishes a GitHub release with the wheel and sdist attached.
 
-Releases are serialized, so two quick merges can't collide. A red build is never released.
+Releases are serialized, so two quick merges can't collide. A red build is never released. Dependabot opens weekly update PRs for Python packages, GitHub Actions and the Docker base image, and they go through the same gates.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the generated history.
 
@@ -358,12 +395,15 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the generated history.
 
 ## Roadmap
 
-Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings paired with phased checklists. The current backlog, [`01_general_audit_todos.md`](docs/todos/01_general_audit_todos.md), has Phase 0 (SQL guard, read-only database, rate limiting, build and packaging) shipped. Next up: typed errors without leakage, bounded result sets, table allowlists, stronger API-key auth, and CI gates (Phase 1), then observability and container hardening (Phase 2).
+Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings paired with phased checklists. The current backlog, [`01_general_audit_todos.md`](docs/todos/01_general_audit_todos.md), has shipped:
+
+- **Phase 0:** SQL guard, read-only database, rate limiting, build and packaging.
+- **Phase 1:** typed errors, bounded results, prompt separation, allowlisted query scope, per-client API keys, and full CI gates.
+
+Next up is Phase 2: OpenTelemetry export and metrics, readiness checks, the rest of the container hardening, and cache resilience.
 
 ---
 
 ## License
 
-Copyright © 2026 Salad Guyo. All rights reserved.
-
-This is proprietary software, as declared in [`pyproject.toml`](pyproject.toml) (`license = { text = "Proprietary" }`). No license is granted to use, copy, modify, or distribute it without the copyright holder's prior written permission.
+[MIT](LICENSE) © Salad Guyo

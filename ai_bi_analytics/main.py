@@ -9,18 +9,28 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from redis.exceptions import RedisError
+from sqlalchemy.exc import DBAPIError
 
 from ai_bi_analytics.api.routes import query
 from ai_bi_analytics.core.config import settings
+from ai_bi_analytics.core.errors import AppError, DependencyUnavailableError
 from ai_bi_analytics.core.logging_config import setup_logging
+from ai_bi_analytics.core.request_context import RequestIdMiddleware, error_body
+from ai_bi_analytics.core.startup_checks import run_startup_checks
+from ai_bi_analytics.db.errors import translate_db_error
 from ai_bi_analytics.db.session import assert_database_role_is_safe, engine
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logging.info("Starting %s in %s", settings.app_name, settings.env)
+    run_startup_checks(settings)
     assert_database_role_is_safe(engine, settings.env)
     yield
 
@@ -47,6 +57,10 @@ def create_app() -> FastAPI:
     )
 
     FastAPIInstrumentor.instrument_app(app)
+    register_exception_handlers(app)
+    # Outermost: also turns unhandled exceptions into a JSON 500 with the
+    # request id, instead of leaking or returning plain text.
+    app.add_middleware(RequestIdMiddleware)
 
     # main endpoint
     app.include_router(query.router, prefix="/api")
@@ -62,6 +76,40 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     return app
+
+
+def _app_error_response(exc: AppError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_body(exc.code, exc.public_message),
+    )
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    """
+    Typed errors to client-safe JSON (audit SEC-4). Bodies carry a
+    message, a stable ``code`` and the ``request_id``; the underlying
+    detail is only logged.
+    """
+
+    @app.exception_handler(AppError)
+    async def handle_app_error(_request: Request, exc: AppError) -> JSONResponse:
+        if exc.status_code >= 500:
+            logger.error("%s: %s", exc.code, exc, exc_info=exc.__cause__)
+        else:
+            logger.warning("%s: %s", exc.code, exc)
+        return _app_error_response(exc)
+
+    @app.exception_handler(DBAPIError)
+    async def handle_db_error(_request: Request, exc: DBAPIError) -> JSONResponse:
+        error = translate_db_error(exc)
+        logger.error("Database error mapped to %s", error.code, exc_info=exc)
+        return _app_error_response(error)
+
+    @app.exception_handler(RedisError)
+    async def handle_redis_error(_request: Request, exc: RedisError) -> JSONResponse:
+        logger.error("Redis error", exc_info=exc)
+        return _app_error_response(DependencyUnavailableError())
 
 
 app = create_app()

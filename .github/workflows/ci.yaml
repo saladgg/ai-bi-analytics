@@ -1,49 +1,179 @@
 name: CI
 
 # Runs on every PR and on main. release.yaml triggers off this workflow
-# completing successfully on main, so nothing is released unless the
-# checks below (formatting, lint, 100% coverage, wheel smoke test) pass.
+# completing successfully on main, so nothing is released unless every job
+# below passes.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+# Actions are SHA-pinned; the trailing comment tracks the human-readable
+# version. Dependabot (.github/dependabot.yml) bumps both together.
+
 jobs:
   lint-test:
-    name: Lint & Test
+    name: Lint, audit & test
     runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v4
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pwd
+          POSTGRES_DB: ai_bi_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U test_user -d ai_bi_db"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
 
-      - uses: astral-sh/setup-uv@v5
+    env:
+      API_KEY: test-api-key
+      DATABASE_URL: sqlite:///./test.db
+      # Enables tests/integration (read-only role, guard output, scope,
+      # row cap) against the service container above.
+      TEST_POSTGRES_OWNER_URL: postgresql+psycopg2://test_user:test_pwd@localhost:5432/ai_bi_db
+      TEST_POSTGRES_READONLY_URL: postgresql+psycopg2://ai_bi_readonly:readonly_pwd@localhost:5432/ai_bi_db
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
+          version: "0.10.9"
           enable-cache: true
 
       - name: Install dev dependencies
         run: make install-dev
 
+      - name: Create the read-only role (shipped script)
+        # The same example/readonly_role.sql compose and operators use, so
+        # CI proves the script itself as well as the app's behaviour.
+        env:
+          PGPASSWORD: test_pwd
+        run: >-
+          psql -h localhost -U test_user -d ai_bi_db
+          -v ro_user=ai_bi_readonly -v ro_password=readonly_pwd
+          -v db_name=ai_bi_db -v owner_role=test_user
+          -f example/readonly_role.sql
+
       - name: Format check
-        # Check-only: `make format` rewrites files and always exits 0, so it
-        # could never fail CI.
+        # Check-only: `make format` rewrites files and always exits 0.
         run: make format-check
 
-      - name: Lint
+      - name: Lint & type check
         run: make lint
 
-      - name: Test
+      - name: Dependency vulnerability audit
+        run: make audit
+
+      - name: Test (100% line + branch coverage, Postgres integration)
+        # Explicit `shell: bash` adds -o pipefail, so `pytest | tee` can't
+        # mask a failure (the default shell is plain `bash -e`).
+        shell: bash
         env:
-          API_KEY: test-api-key
-          DATABASE_URL: sqlite:///./test.db
-        run: make test
+          PYTEST_ADDOPTS: --cov-report=xml
+        run: |
+          make test
+          # Fail if the integration suite silently skipped.
+          uv run pytest tests/integration --no-cov -q -p no:sugar \
+            | tee /tmp/integration.txt
+          ! grep -q "skipped" /tmp/integration.txt
+
+      - name: Upload coverage (Coveralls)
+        # Non-blocking: the 100% gate above is the real check. Needs the
+        # repository enabled on coveralls.io.
+        uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329 # v2.3.8
+        with:
+          file: coverage.xml
+          fail-on-error: false
 
       - name: Wheel smoke test (installs and imports from a clean venv)
         env:
-          API_KEY: test-api-key
           DATABASE_URL: sqlite://
         run: |
           uv build --wheel -o dist-smoke
           uv venv /tmp/wheel-smoke
           VIRTUAL_ENV=/tmp/wheel-smoke uv pip install dist-smoke/*.whl
           cd /tmp && /tmp/wheel-smoke/bin/python -I -c "import ai_bi_analytics.main"
+
+  docker-build:
+    name: Docker image build & scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Compute apt cache-bust date
+        # Re-runs the Dockerfile's apt-get upgrade layer at least daily
+        # instead of replaying a stale gha cache hit, which would keep a
+        # fixed Debian CVE failing the scan below.
+        id: apt-cache-bust
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          build-args: |
+            APT_CACHE_BUST=${{ steps.apt-cache-bust.outputs.date }}
+          # Prove the image builds from a clean checkout on every PR; don't
+          # push it. Load it so Trivy can scan it.
+          push: false
+          load: true
+          tags: ai-bi-analytics:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image for vulnerabilities (Trivy)
+        # Fails on a fixable CRITICAL/HIGH OS or library CVE. Unfixed ones
+        # are reported but don't gate (nothing to upgrade to yet).
+        # `scanners: vuln` skips Trivy's secret scanner (gitleaks below
+        # covers the repo; vendored packages only yield false positives).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-bi-analytics:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          scanners: vuln
+          # The Trivy binary version is independent of the action's; pin it.
+          version: v0.72.0
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so every commit is scanned, not just the tip.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        # The pinned OSS binary; gitleaks-action needs a paid licence
+        # under an organisation.
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Run gitleaks
+        # --redact keeps any hit out of the public log.
+        run: gitleaks detect --source . --redact --verbose --no-banner

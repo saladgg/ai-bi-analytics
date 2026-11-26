@@ -13,6 +13,7 @@ Automatically discovered by pytest.
 import fakeredis
 import pytest
 from ai_bi_analytics.api.deps import verify_api_key
+from ai_bi_analytics.core.security import Principal
 from ai_bi_analytics.db.models import Base
 from ai_bi_analytics.db.session import get_db
 from ai_bi_analytics.main import create_app
@@ -84,7 +85,7 @@ def client(db_session):
         yield db_session
 
     def override_verify_api_key():
-        return None  # bypass auth
+        return Principal("test-client")  # bypass auth
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[verify_api_key] = override_verify_api_key
@@ -128,7 +129,7 @@ def mock_llm(monkeypatch):
     Mock LLM response to avoid real API calls.
     """
 
-    def fake_complete(self, prompt: str):
+    def fake_complete(self, prompt: str, system=None):
         return "SELECT * FROM products;"
 
     mock_llm_instance = type("MockLLM", (), {"complete": fake_complete})()

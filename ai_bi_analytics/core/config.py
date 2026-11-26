@@ -26,6 +26,7 @@ class Settings(BaseSettings):
             session sitting idle inside an open transaction.
         rate_limit_requests (int): Requests allowed per client per window.
         rate_limit_window_seconds (int): Sliding-window length.
+        max_question_length (int): Longest accepted question, in characters.
     """
 
     app_name: str = Field(default="ai-bi-backend", alias="APP_NAME")
@@ -44,6 +45,10 @@ class Settings(BaseSettings):
     rate_limit_requests: int = Field(default=5, gt=0, alias="RATE_LIMIT_REQUESTS")
     rate_limit_window_seconds: int = Field(
         default=60, gt=0, alias="RATE_LIMIT_WINDOW_SECONDS"
+    )
+
+    max_question_length: int = Field(
+        default=500, ge=10, le=4000, alias="MAX_QUESTION_LENGTH"
     )
 
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")

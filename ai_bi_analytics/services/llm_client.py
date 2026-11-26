@@ -20,9 +20,13 @@ class BaseLLMClient(ABC):
     """
 
     @abstractmethod
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, system: str | None = None) -> str:
         """
-        Generate completion from prompt.
+        Generate a completion.
+
+        Args:
+            prompt: The user message (may contain untrusted, tagged data).
+            system: Instructions, sent as a separate system message.
         """
         pass
 
@@ -38,11 +42,15 @@ class OpenAILLMClient(BaseLLMClient):
 
         self.client = OpenAI(api_key=settings.openai_api_key)
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, system: str | None = None) -> str:
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,  # type: ignore[arg-type]
                 max_tokens=250,
                 temperature=0.0,
             )

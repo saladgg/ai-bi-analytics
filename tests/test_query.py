@@ -63,7 +63,7 @@ def test_query_invalid_sql_blocked(client, monkeypatch):
     """
 
     class FakeLLM:
-        def complete(self, prompt):
+        def complete(self, prompt, system=None):
             return "DROP TABLE products;"
 
     monkeypatch.setattr(

@@ -6,9 +6,9 @@ from ai_bi_analytics.services.llm_client import BaseLLMClient, OpenAILLMClient, 
 
 def test_base_llm_client_complete_executes_abstract_body():
     class DummyClient(BaseLLMClient):
-        def complete(self, prompt: str) -> str:
+        def complete(self, prompt: str, system=None) -> str:
             # Execute the abstract base implementation (covers the `pass` line).
-            BaseLLMClient.complete(self, prompt)
+            BaseLLMClient.complete(self, prompt, system)
             return "ok"
 
     assert DummyClient().complete("prompt") == "ok"

@@ -128,7 +128,7 @@ def mock_llm(monkeypatch):
     Mock LLM response to avoid real API calls.
     """
 
-    def fake_complete(self, prompt: str):
+    def fake_complete(self, prompt: str, system=None):
         return "SELECT * FROM products;"
 
     mock_llm_instance = type("MockLLM", (), {"complete": fake_complete})()

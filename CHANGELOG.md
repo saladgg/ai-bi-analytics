@@ -1,6 +1,203 @@
 # CHANGELOG
 
 
+## v1.1.0 (2026-11-26)
+
+### Features
+
+- **security**: Harden the request path, add per-client API keys and CI/local gates
+  ([#7](https://github.com/saladgg/ai-bi-analytics/pull/7),
+  [`e14ca72`](https://github.com/saladgg/ai-bi-analytics/commit/e14ca72c6e34d2caf01e122d9d9c77feba838c1e))
+
+* chore(license): license the project under MIT
+
+Matches the py-authz licensing: an MIT LICENSE file and a README footer linking it. pyproject uses
+  the PEP 639 SPDX form (license = "MIT", license-files) rather than the deprecated { text = ... }
+  table, so the wheel carries License-Expression: MIT and ships the LICENSE file.
+
+* fix(security): return typed, client-safe errors with request ids
+
+SEC-4: the route wrapped the whole pipeline in 'except Exception' and returned str(exc) as a 400.
+  Database hosts, SQL text and provider error details reached clients, and outages were reported as
+  client errors.
+
+- core/errors.py: AppError hierarchy carrying status, a stable code and a client-safe message
+  (UnsafeSQLError 422, QueryExecutionError 422, QueryTimeoutError 504, LLMUnavailableError 502,
+  DependencyUnavailableError 503) - db/errors.py maps driver errors by Postgres SQLSTATE: 57014
+  timeout, 25006/42501 read-only policy, 08/53/57P unavailable, and code-less psycopg2 connection
+  failures - handlers for AppError, DBAPIError and RedisError log the detail and return {detail,
+  code, request_id}; the route's blanket try/except is gone - the OpenAI client wraps provider
+  errors and empty completions in LLMUnavailableError - RequestIdMiddleware (pure ASGI, outermost)
+  accepts a safe X-Request-ID or generates one, echoes it, adds it to every log line, and turns
+  unhandled exceptions into a generic JSON 500 that carries it
+
+Tests assert each status/code mapping, that secrets in exception text never appear in responses but
+  do appear in logs, and the request-id edge cases.
+
+* fix(security): bound questions and separate prompt rules from untrusted text
+
+SEC-6: the question was an unbounded str (a megabyte question was forwarded to the LLM), and both
+  prompts were one f-string mixing rules, schema, the question and, for explanations, raw database
+  rows. That gave attackers a second injection channel through any writable column.
+
+- QueryRequest strips control characters and whitespace and enforces 3..MAX_QUESTION_LENGTH (default
+  500) characters; violations are a 422 before any LLM call - BaseLLMClient.complete takes an
+  optional system message; rules now go there and untrusted content goes in the user message -
+  services/prompting.untrusted_block wraps the question, schema, SQL and result rows in named tags
+  and removes any copy of the tag from the content, so it can't close the block early - both rule
+  sets tell the model tagged content is data, never instructions; result rows are sent as JSON
+  (default=str for Decimal and dates)
+
+This is about cost and answer quality. The SQL guard and the read-only role remain the security
+  boundary.
+
+* fix(security): scope the LLM and the SQL guard to an explicit allowlist
+
+SEC-7: every table in the default schema was sent to a third-party LLM and was queryable. Pointed at
+  an operational database, users, sessions and payments tables were disclosed and readable.
+
+- QUERYABLE_SCHEMA (default public; also the connection search_path, validated as a plain
+  identifier), QUERYABLE_TABLES and REDACTED_COLUMNS (table.column or bare column) settings -
+  outside ENV=development the app refuses to start without QUERYABLE_TABLES (new
+  core/startup_checks.py, run in lifespan) - schema_loader builds one QueryScope (tables and views,
+  allowlist applied, redacted columns removed). It feeds both the prompt and the guard, so the model
+  is never shown anything it can't query, and the reverse. This also drops the second introspection
+  pass per request. - the guard accepts the configured schema and rejects redacted columns, any
+  SELECT * other than COUNT(*), and whole-row references (row_to_json(u)) on restricted tables. It
+  is deliberately conservative; database column privileges are the authoritative layer. -
+  readonly_role.sql takes an optional schema variable (default public), sets the role's search_path,
+  and documents column-level grants
+
+Integration tests on Postgres 18 cover a dedicated schema with a view resolving through search_path,
+  and a column-level grant making Postgres refuse both the hidden column and SELECT *.
+
+* fix(security): bound result sets, explanation input and cached responses
+
+SEC-5: queries had no row cap. fetchall() materialised the whole result, which then went into the
+  explanation prompt, into Redis and back to the client. One broad question or cartesian join could
+  exhaust memory and blow up LLM cost.
+
+- the guard rewrites the outermost LIMIT to MAX_RESULT_ROWS + 1 (default 1000) unless the query
+  already asks for fewer; OFFSET is kept and FETCH FIRST, LIMIT ALL and expression limits are
+  handled, so Postgres itself stops at the cap - the executor uses fetchmany(cap + 1) as a second
+  bound and returns QueryResult(rows, truncated); responses gain row_count and truncated - the
+  explanation prompt gets at most EXPLANATION_SAMPLE_ROWS (default 20) plus a row-count line, and
+  the rules tell the model not to present a sample as the full answer - responses above
+  CACHE_MAX_BYTES (default 512000) are not cached
+
+README documents the bounds, the new response fields, and the error contract from SEC-4. Verified on
+  Postgres 18: the capped canonical SQL truncates and reports it.
+
+* feat(auth): per-client hashed API keys with constant-time lookup
+
+SEC-8: one shared static key compared with !=, no rotation path, no caller identity, 422 on a
+  missing header, nothing stopping the change-me placeholder in production, and the Streamlit demo
+  printed the key to stdout on start.
+
+- API_KEYS=client_id:sha256(key),... : the server stores only hashes, each client has an identity,
+  and rotation is two entries side by side (validated on load; duplicate client ids rejected) -
+  ApiKeyStore compares against every entry with hmac.compare_digest without stopping early -
+  APIKeyHeader security scheme (shown in OpenAPI); missing or unknown keys get 401 with
+  WWW-Authenticate: APIKey; the dependency returns a Principal - the legacy API_KEY still works as
+  client 'default' (now a SecretStr); outside development it must be 32+ chars and not a placeholder
+  (new startup check) - the rate limiter keys on client:<id> for authenticated requests, closing the
+  SEC-3 follow-up; logs carry client_id - 'make api-key CLIENT=<id>' / 'python -m
+  ai_bi_analytics.core.security' generates a key and its API_KEYS entry - removed the API-key print
+  from frontend/api.py
+
+Tests isolate Settings from the process env and the local .env file.
+
+* ci: lint, format-check and type-check the whole repo; add bandit rules
+
+CI-1: ruff and mypy only covered ai_bi_analytics/, so tests, the Streamlit demo and the bootstrap
+  scripts drifted (unformatted files, unsorted imports, a deprecated declarative_base, a type
+  error).
+
+- make format, format-check and lint cover ai_bi_analytics, tests, frontend and example; mypy's file
+  list lives in pyproject - ruff 'S' (flake8-bandit) rules are on everywhere, with per-file ignores
+  for test asserts and fixture SQL and for psql/subprocess and random use in example/ - the one
+  package assert (row-cap type narrowing) is an explicit check, since python -O strips asserts -
+  example models use SQLAlchemy 2 DeclarativeBase; long lines split
+
+* build(deps): clear all known dependency vulnerabilities and add make audit
+
+CI-1: nothing audited dependencies. pip-audit (OSV) found 248 known
+
+vulnerabilities in 13 packages: in the API's runtime path (starlette, urllib3, anyio, idna, certifi,
+  pydantic-settings, opentelemetry-api), in the Streamlit demo's tree (pillow, gitpython, tornado),
+  and in dev tools (virtualenv, filelock, black).
+
+- relocked with upgrades within the declared constraints. uv.lock had been frozen since it was first
+  committed. - streamlit was pinned ==1.55.0, which held pillow below the fixed 13.x; now >=1.55.0,
+  resolving to 1.67.0 (verified with Streamlit's AppTest) - openai's unbounded floor resolved to
+  3.x; the chat.completions, APIError and APIConnectionError surfaces this code uses are unchanged,
+  and the floor is now the tested >=3.60.0 - dropped black and isort; ruff already formats and sorts
+  imports - added pip-audit (dev) and 'make audit' - frontend/api.py fails clearly instead of
+  sending x-api-key: None (caught by the newer requests stubs)
+
+pip-audit now reports no known vulnerabilities; 287 tests pass, including Postgres integration.
+
+* build(docker): ship an image with no known fixable HIGH/CRITICAL CVEs
+
+Trivy 0.72.0 (CRITICAL/HIGH, fixable only) failed the image on: - libzstd1: Debian fix released
+  after the base image was built - msgpack and urllib3 vendored in the base image's system pip,
+  which the app never uses - zip, quinn-proto and rustls-webpki inside the uv 0.10.9 binary
+
+It also found 536 MB of uv download cache baked into a layer.
+
+- apt-get upgrade layer, keyed on an APT_CACHE_BUST build arg so CI's layer cache can't pin stale
+  packages - system pip uninstalled - uv bind-mounted from its pinned official image for the 'uv
+  sync' step only, so it never ships; UV_NO_CACHE so no cache is baked in - CMD runs
+  .venv/bin/uvicorn instead of 'uv run' (no runtime re-sync or download; pulled forward from OPS-4)
+  - compose uses the same entrypoint and keeps the image's venv behind an anonymous /app/.venv
+  volume, which the source bind mount used to hide
+
+Image 1.68 GB -> 906 MB. Trivy exits 0, the container serves /api/health, and the compose-style
+  bind-mount startup works.
+
+* ci: Postgres integration, audit, image scan, secret scan, SHA-pinned actions
+
+CI-1 / TEST-1: - lint-test: a Postgres 18 service; the shipped readonly_role.sql creates the
+  read-only role, so the integration suite (read-only enforcement, guard output, query scope, row
+  cap) runs on every PR, and the step fails if it silently skips - 'make audit' (pip-audit via OSV)
+  gates on known dependency CVEs - coverage.xml goes to Coveralls (non-blocking; the 100% gate is
+  the real check) - docker-build: builds from a clean checkout with a daily apt cache-bust and scans
+  with Trivy (fixable CRITICAL/HIGH fail the build) - secret-scan: gitleaks 8.30.1 over full history
+  (clean today) - every action SHA-pinned; workflow token is contents: read - Dependabot for uv,
+  GitHub Actions and Docker, weekly, minor/patch grouped
+
+release.yaml already waits for all of CI to pass on main.
+
+* docs: record Phase 1 and document the new workflow and CI gates
+
+The 01 backlog ticks every Phase 1 item and records: - deviations: a LIMIT rewrite instead of a
+  subquery wrapper, and a single QUERYABLE_SCHEMA - additions: QueryExecutionError, request ids,
+  make api-key, gitleaks - the OPS-4 parts pulled forward by the Trivy work - uv 0.10.9's own CVEs,
+  to fix together with menu-yetu - open decisions: v1.0.0 assets, Coveralls, the uv bump
+
+README lists the new make targets, what the integration suite and CI cover, Dependabot, and the
+  updated roadmap.
+
+* style: normalise end-of-file newlines
+
+Found by the new end-of-file-fixer hook.
+
+* ci: add pre-commit and pre-push hooks that mirror CI
+
+There were no local hooks (the README claimed a .pre-commit-config.yaml that didn't exist), so
+  formatting, lint, typing, CVE and coverage failures only surfaced in CI after a push.
+
+- commit stage: file hygiene, detect-private-key, gitleaks 8.30.1 (same version as CI), actionlint,
+  and ruff format, ruff check and mypy run from the project venv via 'uv run', so hooks can't drift
+  from CI's tool versions - push stage: 'make audit' and the full test suite with the 100% line +
+  branch coverage gate (about 2 s here) - SKIP_DOTENV=1 makes Settings ignore the local .env, so the
+  push-stage tests see the same configuration as CI - make hooks-install / hooks-run; README and
+  backlog (DX-1) updated
+
+Verified in a scratch clone: a commit with unformatted code and a private key is rejected, and a
+  push of untested code (99.33% coverage) is rejected before reaching the remote.
+
+
 ## v1.0.1 (2026-11-26)
 
 ### Chores

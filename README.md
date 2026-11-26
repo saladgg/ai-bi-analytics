@@ -364,6 +364,4 @@ Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings pa
 
 ## License
 
-Copyright © 2026 Salad Guyo. All rights reserved.
-
-This is proprietary software, as declared in [`pyproject.toml`](pyproject.toml) (`license = { text = "Proprietary" }`). No license is granted to use, copy, modify, or distribute it without the copyright holder's prior written permission.
+[MIT](LICENSE) © Salad Guyo

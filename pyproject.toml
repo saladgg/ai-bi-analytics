@@ -114,11 +114,30 @@ profile = "black"
 
 
 [tool.pytest.ini_options]
-addopts = "--cov=ai_bi_analytics --cov-report=term-missing --durations=10 --cache-clear -v"
+# Coverage is a hard gate: line AND branch coverage must stay at 100%.
+# Running a subset of tests locally will trip it; pass --no-cov for that.
+addopts = """
+    --cov=ai_bi_analytics
+    --cov-branch
+    --cov-report=term-missing
+    --cov-fail-under=100
+    --durations=10
+    --cache-clear
+    -v
+"""
 testpaths = ["tests"]
 markers = [
   "integration: needs real backing services (see each module's docstring); skipped when not configured",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["ai_bi_analytics"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = false
 
 [[tool.uv.index]]
 name = "pypi"
@@ -131,7 +150,13 @@ version_toml = [
     "pyproject.toml:project.version:nf"
 ]
 branch = "main"
-build_command = "python -m build"
+# uv.lock records the project's own version. Without re-locking, the release
+# commit leaves it one version behind and the next `uv run` on any branch
+# drags a stray uv.lock bump into an unrelated PR. `uv lock` keeps pinned
+# dependency versions unchanged. `uv build` produces the wheel/sdist that
+# `publish` attaches to the GitHub release.
+build_command = "uv lock && uv build"
+assets = ["uv.lock"]
 
 [tool.semantic_release.publish]
 upload_to_vcs_release = true

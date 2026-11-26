@@ -1,41 +1,83 @@
 name: Release
 
+# Release runs ONLY after the CI workflow succeeds on main, never in
+# parallel with it. The previous `on: push` trigger raced CI, so a red build
+# (failing tests, coverage under 100%) could still be versioned, tagged,
+# changelogged and published. The job below double-checks the triggering
+# run's conclusion and branch.
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
 
+# Serialize releases so two quick merges can't race `semantic-release
+# version` into a tag collision or a skipped bump. Never cancel an
+# in-flight release mid-publish; queue the next one instead.
+concurrency:
+  group: release-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write   # required to create tags & releases
+  contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Gate: only release when the CI run that triggered us actually passed,
+    # and only for main. workflow_run already filters to main; assert it too.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # SHA-pinned (not tag-pinned): this job holds a contents:write token,
+        # so a compromised or retagged action could push tags/releases. The
+        # trailing comment tracks the human-readable version; bump both
+        # together.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0   # REQUIRED for semantic-release
-      - name: Fetch all tags
-        run: git fetch --force --tags
+          fetch-depth: 0 # semantic-release needs full history and tags
+          # Release exactly the commit CI validated, not whatever is newest
+          # on main at trigger time.
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Debug Git state
-        run: |
-          git tag
-          git log --oneline -5
-          git describe --tags --abbrev=0 || echo "No tags found"
+      - name: Reattach HEAD to main at the validated commit
+        # Checking out a raw SHA leaves a detached HEAD, which
+        # python-semantic-release refuses to release from ("Detached HEAD
+        # state cannot match any release groups"). Point a local `main` at
+        # the validated commit: PSR sees `main`, and we still release the
+        # CI-validated SHA. If a newer commit has since landed on
+        # origin/main, PSR's push fails fast (non-fast-forward) instead of
+        # releasing stale code.
+        run: git checkout -B main
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
 
-      - name: Install dependencies
-        run: pip install python-semantic-release build
+      - name: Set up uv
+        # Used by the release `build_command` (pyproject.toml): re-locks so
+        # uv.lock carries the new version, and builds the wheel/sdist
+        # attached to the GitHub release. Version-pinned so the lockfile
+        # format matches what developers write locally; bump alongside
+        # everyone's uv.
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.10.9"
+
+      - name: Install semantic-release
+        # Pinned: a floating latest runs with a contents:write token and
+        # could silently jump to a breaking major. Bump deliberately.
+        run: pip install "python-semantic-release==9.21.1"
 
       - name: Semantic Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # No --skip-build: the build step re-locks uv.lock and builds dist/
+          # (pyproject.toml `build_command`); `assets` commits uv.lock.
           semantic-release version
           semantic-release publish

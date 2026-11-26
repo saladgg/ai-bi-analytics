@@ -1,7 +1,12 @@
 name: CI
 
+# Runs on every PR and on main. release.yaml triggers off this workflow
+# completing successfully on main, so nothing is released unless the
+# checks below (formatting, lint, 100% coverage, wheel smoke test) pass.
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 jobs:
@@ -20,7 +25,9 @@ jobs:
         run: make install-dev
 
       - name: Format check
-        run: make format
+        # Check-only: `make format` rewrites files and always exits 0, so it
+        # could never fail CI.
+        run: make format-check
 
       - name: Lint
         run: make lint

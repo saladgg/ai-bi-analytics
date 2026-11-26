@@ -15,8 +15,8 @@ help:
 	@echo "  make prod           Run production server"
 	@echo "  make lint           Run ruff"
 	@echo "  make format         Format code"
-	@echo "  make check          CI formatting checks"
-	@echo "  make test           Run tests"
+	@echo "  make format-check   Check formatting without changing files (CI)"
+	@echo "  make test           Run tests (fails under 100% line+branch coverage)"
 	@echo "  make docker-build   Build Docker image"
 
 
@@ -58,11 +58,14 @@ update:
 
 SOURCE = ai_bi_analytics
 
-.PHONY: format lint test
+.PHONY: format format-check lint test
 
 format:
 	uv run ruff format $(SOURCE) 
 	uv run ruff check $(SOURCE) --fix 
+
+format-check:
+	uv run ruff format --check $(SOURCE)
 
 lint:
 	uv run ruff check $(SOURCE) 

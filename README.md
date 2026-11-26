@@ -67,7 +67,7 @@ This project demonstrates how to ship that capability **safely**: an LLM-backed 
         └──────────┬───────────┘
                    ▼
         ┌──────────────────────┐
-        │   SQL validator      │  SELECT-only, single statement
+        │   SQL guard (AST)    │  one read query, known tables
         └──────────┬───────────┘
                    ▼
         ┌──────────────────────┐
@@ -90,7 +90,7 @@ Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
 ## Features
 
 ### NL → SQL with strict guardrails
-The validator rejects anything that isn't a single `SELECT`. `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, multi-statement payloads, and comments-as-injection are all blocked before the query reaches the database. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
+Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglot), Postgres dialect) and accepted only if it is exactly one read query (`SELECT`, `UNION`, `WITH … SELECT`) with no write, DDL, `COPY`, `SELECT INTO` or row lock anywhere in the tree, no dangerous functions (`pg_sleep`, `pg_read_file`, `lo_*`, `dblink`, `set_config`, …), and only tables that exist in the default schema (never system catalogs). The API executes SQL **regenerated from the validated AST**, not the raw model output, so what was checked is exactly what runs. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
 
 ### Dynamic schema introspection
 Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No hard-coded schema strings means no schema drift between code and prompts.
@@ -99,7 +99,7 @@ Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No h
 Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
 
 ### Sliding-window rate limiting
-Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-increment is atomic across replicas. Default policy: 5 requests per minute per client.
+Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the connecting address. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
 
 ### Observability
 - **Structured logging** — request lifecycle, cache hit/miss, SQL, row counts, errors.

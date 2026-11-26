@@ -5,71 +5,111 @@ IDs match that file; evidence, file:line references and rationale live
 there. Ship order is phase order. Items within a phase are independent
 unless a dependency is noted.
 
-> **Status (2026-11-26):** **Filed, nothing shipped.** Phase 0 is the
-> go-live blocker set. The service shouldn't be pointed at any database
-> holding real data until SEC-1, SEC-2 and SEC-3 are done, and v1.0.0
-> artifacts shouldn't be consumed until PKG-1 is done. Phases 4–5 are
-> product-shaped and need a scope decision before anyone builds them.
+> **Status (2026-11-26):** **Phase 0 shipped** on
+> `fix/phase0-security-build-hardening` (one commit per finding: OPS-1 +
+> PKG-1, SEC-2, SEC-3, SEC-1 + CQ-1). Every fix was re-verified against
+> the real component, not just the unit suite:
+> - the audit's validator probe now rejects every bypass and accepts
+>   every false positive;
+> - 20 burst requests against `redis-server` give 5 allowed and 15
+>   blocked, with spoofed `X-Forwarded-For` ignored;
+> - the new Postgres 18 integration suite (15 tests) passes, refusing
+>   writes, a smuggled `COMMIT`, writable CTEs, `GRANT`, `pg_read_file`
+>   and a `pg_sleep` past the timeout;
+> - a clean clone builds in Docker with a canary `.env` absent from the
+>   image;
+> - the wheel installs and imports from a fresh venv.
+>
+> Suite: 131 passed + 15 integration (skipped unless `TEST_POSTGRES_*_URL`
+> are set), 100% line coverage. **Still open from Phase 0:** the release
+> decision on the broken v1.0.0 assets (PKG-1) and keying the limiter on
+> client identity (needs SEC-8). The integration suite isn't wired into
+> CI yet; that is TEST-1 in Phase 1.
+> Phases 1–3 are next. Phases 4–5 are product-shaped and need a scope
+> decision before anyone builds them.
 
 ---
 
-## Phase 0 — Stop the bleeding (security + broken build) 🔴
+## Phase 0 — Stop the bleeding (security + broken build) 🔴 ✅ (one decision open)
 
-- [ ] **SEC-2 — Enforce read-only at the database (ship first, cheapest
-  real control).**
-  - [ ] `db/session.py`: `connect_args={"options": "-c default_transaction_read_only=on -c statement_timeout=<cfg> -c idle_in_transaction_session_timeout=<cfg>"}`
-    (Postgres only; skip for SQLite in tests).
-  - [ ] `query_executor.py`: run inside `SET TRANSACTION READ ONLY`; always
-    `rollback()`.
-  - [ ] `example/readonly_role.sql` + rewrite `example/db_user_setup.py`:
-    an owner role for seeding, a `NOSUPERUSER NOCREATEDB NOCREATEROLE`
-    read-only role with `SELECT` on allowlisted tables only, and no
-    `pg_read_server_files` / `pg_execute_server_program` membership.
-  - [ ] Startup guard in `lifespan`: refuse to boot when `ENV != development`
-    and `current_user` has `rolsuper` or `rolcreaterole`.
-  - [ ] `.env.example` and README: the app connects as the read-only role;
-    seeding uses the owner role.
-- [ ] **SEC-1 + CQ-1 — Replace the string validator with an AST guard.**
-  - [ ] Add `sqlglot`; parse with the postgres dialect; reject anything
-    other than exactly one statement whose root is `Select`, `Union` or
-    `With`→`Select`.
-  - [ ] Table allowlist check (depends on SEC-7 settings; until then, use
-    the reflected table set). Reject `pg_catalog` / `information_schema`
-    references.
-  - [ ] Function allowlist (aggregates, date/time, string, math,
-    `COALESCE`/`CASE`…) or, at minimum, a denylist: `pg_*`, `lo_*`,
-    `dblink*`, `set_config`, `current_setting`, `query_to_xml*`, `copy`.
-  - [ ] Strip markdown code fences before parsing.
-  - [ ] Adversarial test corpus covering every **(verified)** row in the
-    findings table plus case and whitespace variants; regression tests for
-    `created_at`, `last_update`, string literals and CTEs passing.
-- [ ] **SEC-3 — Make the rate limiter actually limit.**
-  - [ ] Lua: return `{allowed(0|1), count}`; unique member (Redis `TIME`
-    micros + random suffix); millisecond scores; `PEXPIRE`.
-  - [ ] Python: branch on `allowed`; return `Retry-After` and
-    `X-RateLimit-Limit/Remaining`.
-  - [ ] Key on the client id once SEC-8 lands; meanwhile use
-    `request.client.host` only. Drop the raw `X-Forwarded-For` read and run
-    uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>`.
-  - [ ] Move the limit and window into Settings (with ARCH-2).
-  - [ ] Replace the conftest fake with `fakeredis[lua]` so tests run the
-    real script; assert request N+1 gets a 429 (see TEST-1).
-- [ ] **OPS-1 — Fix the clean-clone build and stop baking secrets into
-  images.**
-  - [ ] Remove `uv.lock` and `*.dockerignore` from `.gitignore`; commit
-    `uv.lock`.
-  - [ ] Add `.dockerignore` (`.env*`, `.venv`, `.git`, `dist`, `*.db`,
-    caches, `.idea`, `.qodo`, `tests`, `docs`, `frontend`, `example`).
-  - [ ] Verify with `git clone` into a temp dir, then `docker build`.
-- [ ] **PKG-1 — Ship an importable wheel.**
-  - [ ] `[tool.setuptools.packages.find] include = ["ai_bi_analytics*"]`
-    and `[tool.setuptools.package-data] ai_bi_analytics = ["core/lua/*.lua"]`.
-  - [ ] Remove `build` from runtime `dependencies`; drop the `v` from
-    `version`.
-  - [ ] CI smoke step: `uv build` → fresh venv → `pip install dist/*.whl`
-    → `python -c "import ai_bi_analytics.main"`.
-  - [ ] Decide whether to yank or annotate the broken v1.0.0 GitHub
-    release assets.
+- [x] **SEC-2 — Enforce read-only at the database.** `34df8f0`
+  - [x] `db/session.py` `build_engine_kwargs`: Postgres connections start
+    with `default_transaction_read_only=on`, `statement_timeout` and
+    `idle_in_transaction_session_timeout` (new settings
+    `DB_STATEMENT_TIMEOUT_MS` / `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS`).
+    Non-Postgres URLs are untouched.
+  - [x] `query_executor.py`: on Postgres, `SET TRANSACTION READ ONLY` as
+    the first statement and a `rollback()` in `finally`.
+  - [x] `example/readonly_role.sql` (idempotent, psql variables): a
+    `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+    NOINHERIT` role. The read-only default and timeouts are also pinned
+    **on the role**, so they hold behind PgBouncer. Compose runs it on
+    first start (`example/initdb/10_readonly_role.sh`), and
+    `db_user_setup.py` now creates an owner and a read-only role with
+    psql variables instead of f-string SQL. *Deviation:* `SELECT` is
+    granted schema-wide on `public` (plus default privileges for new
+    tables), not per table. Narrowing comes with SEC-7's allowlist.
+  - [x] `assert_database_role_is_safe` in `lifespan` refuses to boot outside
+    development on `SUPERUSER`, `CREATEROLE`, `CREATEDB` or `BYPASSRLS`,
+    and fails closed when the role can't be verified. In development it
+    only warns.
+  - [x] `.env.example`, README, and `example/README.md` (two-role model,
+    plus manual role creation for pre-existing compose volumes).
+  - [x] `tests/integration/test_postgres_readonly.py`, verified on
+    Postgres 18.
+- [x] **SEC-1 + CQ-1 — AST guard.** `8c8f839`
+  - [x] `sqlglot` postgres dialect; exactly one statement; root is `Select`
+    or a set operation (`WITH` parses as a `Select` with CTEs). Empty and
+    comment-only trailers (`;;`, `; -- done`) don't count as statements.
+  - [x] Forbidden-node scan of the whole tree (DML, DDL, `COPY`, `GRANT`,
+    `SET`, transactions, `Command`, `SELECT INTO`, `FOR UPDATE/SHARE`, …).
+  - [x] Reflected-table allowlist (`schema_loader.load_table_names`); CTE
+    names allowed; quoted identifiers stay case-sensitive; non-default
+    schemas, cross-database references and system catalogs are rejected
+    even without an allowlist.
+  - [x] Function **denylist** (`pg_*`, `lo_*`, `dblink*`, `*_to_xml`,
+    `set_config`, `current_setting`, sequence functions, `inet_*`, …).
+    An allowlist was judged too likely to reject legitimate model output
+    for now; the read-only role is the backstop.
+  - [x] Strips markdown code fences.
+  - [x] **Added beyond the plan:** the route executes SQL regenerated from
+    the validated AST (comments dropped), not the raw model output.
+    Integration tests confirm it keeps its meaning on Postgres.
+  - [x] Corpus in `tests/test_sql_validator.py`: every verified bypass,
+    nested and CTE variants, catalogs, unknown tables, and false-positive
+    regressions.
+- [x] **SEC-3 — Make the rate limiter actually limit.** `4d8f153`
+  - [x] Lua returns `{allowed, count, retry_after_ms}`, uses Redis `TIME`,
+    ms scores, unique `now_ms:uuid` members, and `PEXPIRE`.
+  - [x] Python branches on `allowed`. 429s carry `Retry-After` and
+    `X-RateLimit-*`; successful `/api/query` responses carry
+    `X-RateLimit-*`.
+  - [x] Bucket = `request.client.host`; the raw `X-Forwarded-For` read is
+    gone. Uvicorn's proxy-header handling is on by default and trusts
+    `FORWARDED_ALLOW_IPS` (documented in `.env.example`), so no
+    Dockerfile change was needed.
+  - [ ] Key on the client id. Blocked on SEC-8 (Phase 1).
+  - [x] `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` settings. The
+    Lua script loads via `importlib.resources` (fixes ARCH-4's CWD
+    dependency).
+  - [x] `fakeredis[lua]` runs the real script in tests; the route also
+    exercises the real cache module now. Re-verified on `redis-server`.
+- [x] **OPS-1 — Clean-clone build, no secrets in images.** `7d80d8a`
+  - [x] `uv.lock` committed; `uv.lock` and `*.dockerignore` removed from
+    `.gitignore`.
+  - [x] `.dockerignore` added.
+  - [x] Verified: a fresh `git clone` builds, and a canary `.env` is absent
+    from the image.
+- [x] **PKG-1 — Ship an importable wheel.** `7d80d8a`
+  - [x] Package discovery and Lua package-data.
+  - [x] `build` removed from runtime deps; `version = "1.0.0"` (PSR
+    `version_toml` switched to number format `:nf` so it stays PEP 440).
+    The `make build` target uses `uv build`.
+  - [x] CI step "Wheel smoke test" installs the built wheel into a clean
+    venv and imports `ai_bi_analytics.main`.
+  - [ ] **Decision needed:** yank or annotate the broken v1.0.0 GitHub
+    release assets. Merging this branch's `fix:` commits will cut v1.0.1
+    with a working wheel.
 
 ## Phase 1 — Harden the request path and make CI a real gate 🟠
 

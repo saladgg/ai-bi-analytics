@@ -129,3 +129,34 @@ def test_superuser_fails_startup_check():
             assert_database_role_is_safe(engine, "production")
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        (
+            f"WITH t AS (SELECT * FROM {TABLE}) SELECT name FROM t ORDER BY id",
+            [{"name": "a"}, {"name": "b"}],
+        ),
+        (
+            f"SELECT name, RANK() OVER (ORDER BY id DESC) AS r FROM {TABLE} ORDER BY r",
+            [{"name": "b", "r": 1}, {"name": "a", "r": 2}],
+        ),
+        (
+            f"SELECT $$x; DROP TABLE {TABLE}$$ AS s FROM {TABLE} LIMIT 1",
+            [{"s": f"x; DROP TABLE {TABLE}"}],
+        ),
+        (
+            f"```sql\nSELECT count(*) AS n /* c */ FROM {TABLE}; -- done\n```",
+            [{"n": 2}],
+        ),
+    ],
+)
+def test_guard_canonical_sql_executes_on_postgres(readonly_session, sql, expected):
+    """The guard executes SQL regenerated from its AST; it must stay valid
+    Postgres with the same meaning as the model's original query."""
+    from ai_bi_analytics.services.sql_validator import validate_sql
+
+    canonical = validate_sql(sql, allowed_tables={TABLE})
+
+    assert execute_query(readonly_session, canonical) == expected

@@ -15,7 +15,10 @@ from ai_bi_analytics.services.cache import (
 from ai_bi_analytics.services.explanation import explain_result
 from ai_bi_analytics.services.nl_to_sql import generate_sql
 from ai_bi_analytics.services.query_executor import execute_query
-from ai_bi_analytics.services.schema_loader import load_schema_metadata
+from ai_bi_analytics.services.schema_loader import (
+    load_schema_metadata,
+    load_table_names,
+)
 from ai_bi_analytics.services.sql_validator import validate_sql
 
 logger = logging.getLogger(__name__)
@@ -43,8 +46,9 @@ def query_database(
         if cached:
             return cached
 
-        sql = generate_sql(payload.question, schema_description)
-        validate_sql(sql)
+        generated_sql = generate_sql(payload.question, schema_description)
+        # Execute the guard's canonical SQL, never the raw model output.
+        sql = validate_sql(generated_sql, allowed_tables=load_table_names(db))
         result = execute_query(db, sql)
         explanation = explain_result(payload.question, sql, result)
 

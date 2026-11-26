@@ -33,11 +33,11 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
+from ai_bi_analytics.core.errors import UnsafeSQLError
+
+__all__ = ["UnsafeSQLError", "strip_code_fences", "validate_sql"]
+
 DIALECT = "postgres"
-
-
-class UnsafeSQLError(ValueError):
-    """Generated SQL was rejected by the guard."""
 
 
 READ_ROOTS: tuple[type[exp.Expression], ...] = (exp.Select, exp.SetOperation)

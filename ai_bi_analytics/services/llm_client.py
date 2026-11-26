@@ -7,9 +7,11 @@ Allows swapping providers without affecting business logic.
 
 from abc import ABC, abstractmethod
 
+import openai
 from openai import OpenAI
 
 from ai_bi_analytics.core.config import settings
+from ai_bi_analytics.core.errors import LLMUnavailableError
 
 
 class BaseLLMClient(ABC):
@@ -37,14 +39,22 @@ class OpenAILLMClient(BaseLLMClient):
         self.client = OpenAI(api_key=settings.openai_api_key)
 
     def complete(self, prompt: str) -> str:
-        response = self.client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=250,
-            temperature=0.0,
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=250,
+                temperature=0.0,
+            )
+        except openai.APIError as exc:
+            # Provider errors carry request ids, quota and account details;
+            # keep them in the log, not the response (audit SEC-4).
+            raise LLMUnavailableError() from exc
 
-        return response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if not content:
+            raise LLMUnavailableError("The language model returned no answer.")
+        return content.strip()
 
 
 def get_llm_client() -> BaseLLMClient:

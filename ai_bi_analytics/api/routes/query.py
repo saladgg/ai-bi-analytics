@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from ai_bi_analytics.api.deps import verify_api_key
@@ -26,6 +26,7 @@ router = APIRouter()
 @router.post("/query", response_model=QueryResponse)
 def query_database(
     request: Request,
+    response: Response,
     payload: QueryRequest,
     db: Session = Depends(get_db),  # noqa B008
     _: None = Depends(verify_api_key),
@@ -33,7 +34,8 @@ def query_database(
     """
     Full NL → SQL → Execute pipeline.
     """
-    enforce_rate_limit(request)
+    rate_limit = enforce_rate_limit(request)
+    response.headers.update(rate_limit.headers())
     try:
         schema_description = load_schema_metadata(db)
         cache_key = generate_cache_key(payload.question + "|" + schema_description)
@@ -55,7 +57,7 @@ def query_database(
             },
         )
 
-        response = QueryResponse(
+        query_response = QueryResponse(
             sql=sql,
             result=result,
             explanation=explanation,
@@ -63,10 +65,10 @@ def query_database(
 
         set_cached_response(
             cache_key,
-            response.model_dump(),
+            query_response.model_dump(),
         )
 
-        return response
+        return query_response
 
     except Exception as exc:
         logger.error("Request failure: %s", str(exc))

@@ -47,6 +47,7 @@ test = [
   "pytest-cov>=5.0.0",
   "pytest-sugar~=1.1.1",
   "Faker>=40.4.0",
+  "fakeredis[lua]>=2.41.0",
 ]
 dev = [
   { include-group = "test" },

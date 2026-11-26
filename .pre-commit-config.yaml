@@ -1,0 +1,101 @@
+# Pre-commit hooks for ai-bi-analytics: catch locally what CI would fail on.
+#
+# Install once per clone (wires up BOTH the commit and the push hook):
+#     make hooks-install
+#
+# Run everything against all files (without committing):
+#     make hooks-run
+#
+# Two stages run automatically once installed:
+#   - commit (fast, changed files): file hygiene, secret scan, ruff, mypy,
+#     workflow lint.
+#   - push (whole project): dependency audit and the full test suite with
+#     the 100% line + branch coverage gate. The suite takes seconds, so a
+#     push can't fail CI on tests or coverage either.
+#
+# CI (.github/workflows/ci.yaml) stays the source of truth; these hooks are
+# the fast local feedback layer. Skip in an emergency with --no-verify.
+
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+        exclude: '^uv\.lock$'
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # Secret scanning of staged changes. CI runs the same version over the
+  # full history (ci.yaml `secret-scan`); keep `rev` in step with it.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # Lint GitHub workflows (expressions, action inputs, shell) before a
+  # broken workflow reaches CI.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # ruff and mypy run from the PROJECT venv (`uv run`), not pinned hook
+  # repos, so the hook can never disagree with CI's `make format-check` /
+  # `make lint` because of a version drift. File scope and rules come from
+  # pyproject.toml.
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+
+      - id: ruff
+        name: ruff check (incl. bandit S rules)
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy (project venv, files from pyproject)
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+
+  # --- pre-push only: project-wide gates ------------------------------------ #
+  - repo: local
+    hooks:
+      - id: audit
+        name: pip-audit (known CVEs in locked deps)
+        entry: make audit
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: tests
+        name: pytest (100% line + branch coverage, as in CI)
+        # SKIP_DOTENV + the same env CI sets, so a local .env (ENV,
+        # QUERYABLE_TABLES, ...) can't make this pass or fail differently
+        # from CI. Postgres integration tests run too if TEST_POSTGRES_*_URL
+        # are exported in your shell; otherwise CI covers them.
+        entry: >-
+          env SKIP_DOTENV=1 API_KEY=test-api-key
+          DATABASE_URL=sqlite:///./test.db make test
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

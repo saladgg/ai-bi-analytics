@@ -18,6 +18,8 @@ help:
 	@echo "  make format-check   Check formatting without changing files (CI)"
 	@echo "  make test           Run tests (fails under 100% line+branch coverage)"
 	@echo "  make audit          Audit dependencies for known vulnerabilities"
+	@echo "  make hooks-install  Install pre-commit + pre-push hooks (once per clone)"
+	@echo "  make hooks-run      Run every hook (both stages) on all files"
 	@echo "  make docker-build   Build Docker image"
 	@echo "  make api-key CLIENT=<id>  Generate a client API key + API_KEYS entry"
 
@@ -82,6 +84,14 @@ lint:
 
 test:
 	uv run pytest
+
+.PHONY: hooks-install hooks-run
+hooks-install:
+	uv run pre-commit install --install-hooks
+
+hooks-run:
+	uv run pre-commit run --all-files
+	uv run pre-commit run --all-files --hook-stage pre-push
 
 .PHONY: audit
 audit:

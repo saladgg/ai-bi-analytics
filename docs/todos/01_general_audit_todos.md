@@ -279,7 +279,11 @@ Postgres 18, at 100% line and branch coverage.
   and first numeric column (fixes the `IndexError` on 2–3 column results);
   POST to `/api/query` without the slash; friendly error rendering; show
   `truncated` (SEC-5).
-- [ ] **DX-1 — Makefile/README truth.** Fix `help`, add `check`, remove
+- [ ] **DX-1 — Makefile/README truth.** *Partly done:* `.pre-commit-config.yaml`
+  now exists (commit: hygiene, private keys, gitleaks, actionlint, ruff,
+  mypy; push: `make audit` and the full suite at 100% coverage, run with
+  `SKIP_DOTENV=1`), with `make hooks-install` / `make hooks-run`. Both a
+  bad commit and a coverage-failing push were shown to be blocked.** Fix `help`, add `check`, remove
   `release: … publish` and `tempTarget`, fix `venv_setup` and `clean`;
   add `.pre-commit-config.yaml` (ruff, ruff-format, mypy, end-of-file,
   detect-private-key) or remove the README claim; add the Roadmap section

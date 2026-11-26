@@ -5,6 +5,7 @@ Loads and validates environment-based settings using Pydantic.
 Ensures centralized configuration management.
 """
 
+import os
 import re
 from typing import Annotated
 
@@ -88,7 +89,12 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    # SKIP_DOTENV=1 ignores a local .env, so the pre-push test hook sees the
+    # same configuration as CI (which has no .env) instead of a developer's.
+    model_config = SettingsConfigDict(
+        env_file=None if os.getenv("SKIP_DOTENV") else ".env",
+        case_sensitive=False,
+    )
 
     @field_validator("queryable_tables", "redacted_columns", "api_keys", mode="before")
     @classmethod

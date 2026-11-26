@@ -336,6 +336,22 @@ make api-key CLIENT=<id>   # generate a client key and its API_KEYS entry
 make clean         # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
 ```
 
+### Git hooks (run once per clone)
+
+```bash
+make hooks-install   # installs both the pre-commit and pre-push hooks
+make hooks-run       # run every hook against all files
+```
+
+Hooks catch locally what CI would fail on ([`.pre-commit-config.yaml`](.pre-commit-config.yaml)):
+
+- **On commit** (changed files, a few seconds): file hygiene, private-key detection, gitleaks, actionlint for workflows, and ruff format, ruff lint and mypy from the project venv (so they can't drift from CI's versions).
+- **On push**: `make audit` and the full test suite with the 100% coverage gate. The tests run with `SKIP_DOTENV=1` and CI's environment, so your local `.env` can't make the result differ from CI.
+
+To bypass the hooks in an emergency, use `git commit --no-verify` or `git push --no-verify`. CI still runs everything.
+
+### Tests
+
 Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`.
 
 The integration suite in [`tests/integration/`](tests/integration/) runs against a real PostgreSQL. It covers read-only enforcement, timeouts, the guard's canonical SQL, the query scope on a dedicated schema, column privileges and the row cap. CI runs it on every PR. Locally it is skipped unless both URLs are set, e.g. against the compose Postgres:

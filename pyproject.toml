@@ -37,8 +37,8 @@ dependencies = [
   "opentelemetry-sdk>=1.40.0",
   "opentelemetry-exporter-otlp>=1.40.0",
   "streamlit==1.55.0",
-  "pandas==2.3.3", 
-  "plotly==6.6.0"
+  "pandas==2.3.3",
+  "plotly==6.6.0",
 ]
 
 [dependency-groups]
@@ -46,7 +46,7 @@ test = [
   "pytest>=9.0.2",
   "pytest-cov>=5.0.0",
   "pytest-sugar~=1.1.1",
-  "Faker>=40.4.0"
+  "Faker>=40.4.0",
 ]
 dev = [
   { include-group = "test" },
@@ -114,6 +114,9 @@ profile = "black"
 [tool.pytest.ini_options]
 addopts = "--cov=ai_bi_analytics --cov-report=term-missing --durations=10 --cache-clear -v"
 testpaths = ["tests"]
+markers = [
+  "integration: needs real backing services (see each module's docstring); skipped when not configured",
+]
 
 [[tool.uv.index]]
 name = "pypi"

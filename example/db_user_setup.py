@@ -1,92 +1,111 @@
-"""A simple script for creating database and database user on PostgreSQL."""
+"""Create the database and its two roles on a local (non-Docker) PostgreSQL.
 
+Two roles, deliberately separate (audit SEC-2):
+
+- an **owner** role (``DB_OWNER_USER``) that owns the database and is used
+  to create and seed tables (``example/gen_test_table_data.py``);
+- a **read-only** role (``DB_READONLY_USER``) that the API connects as.
+  It can only ``SELECT``, defaults to read-only transactions, and has a
+  statement timeout (see ``example/readonly_role.sql``).
+
+Neither role is a superuser. Passwords come from the environment; the
+defaults are for local development only.
+
+Usage::
+
+    DB_OWNER_PASSWORD=... DB_READONLY_PASSWORD=... python example/db_user_setup.py
+
+Requires ``sudo -u postgres psql`` access on the local machine.
+"""
+
+import os
 import subprocess
 import sys
-from typing import Optional
+from pathlib import Path
 
-# Database configuration
+DB_NAME = os.getenv("DB_NAME", "ai_bi_db")
+DB_OWNER_USER = os.getenv("DB_OWNER_USER", "ai_bi_owner")
+DB_OWNER_PASSWORD = os.getenv("DB_OWNER_PASSWORD", "owner_pwd")
+DB_READONLY_USER = os.getenv("DB_READONLY_USER", "ai_bi_readonly")
+DB_READONLY_PASSWORD = os.getenv("DB_READONLY_PASSWORD", "readonly_pwd")
 
-DB_NAME = "ai_bi_db"
-DB_USER = "app"
-DB_PASSWORD = "app"
+READONLY_ROLE_SQL = Path(__file__).with_name("readonly_role.sql")
+
+PSQL = ["sudo", "-u", "postgres", "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1"]
+
+# Values are passed as psql variables (:'name' literals / :"name"
+# identifiers) and quoted by psql, never interpolated into SQL text.
+CREATE_OWNER_SQL = """
+SELECT format('CREATE ROLE %I LOGIN', :'owner_user')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'owner_user')
+\\gexec
+ALTER ROLE :"owner_user" WITH LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB
+    PASSWORD :'owner_password';
+SELECT format('CREATE DATABASE %I OWNER %I', :'db_name', :'owner_user')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db_name')
+\\gexec
+ALTER DATABASE :"db_name" SET timezone TO 'UTC';
+"""
+
+# Make the owner own the public schema so its tables and default
+# privileges line up with what readonly_role.sql grants.
+OWN_PUBLIC_SCHEMA_SQL = 'ALTER SCHEMA public OWNER TO :"owner_user";'
 
 
-def run_psql_command(command: str, dbname: Optional[str] = None) -> None:
-    """Execute PostgreSQL commands.
+def run_psql(
+    variables: dict[str, str],
+    *,
+    sql: str | None = None,
+    sql_file: Path | None = None,
+    dbname: str | None = None,
+) -> None:
+    cmd = list(PSQL)
+    if dbname:
+        cmd += ["-d", dbname]
+    for name, value in variables.items():
+        cmd += ["-v", f"{name}={value}"]
 
-    Args:
-        command: The SQL command to execute
-        dbname: Optional database name to connect to
-    """
+    stdin = None
+    if sql_file is not None:
+        # psql runs as the postgres OS user, which may not be able to read
+        # the repo checkout, so stream the file over stdin instead of -f.
+        stdin = sql_file.read_text()
+    elif sql is not None:
+        stdin = sql
+
     try:
-        cmd = ["sudo", "-u", "postgres", "psql", "-U", "postgres"]
-        if dbname:
-            cmd.extend(["-d", dbname])
-        cmd.extend(["-c", command])
-
-        subprocess.run(
-            cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        subprocess.run(cmd, input=stdin, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        print(  # noqa: T201
-            f"Error executing command: {e.stderr.strip()}", file=sys.stderr
-        )
+        print(f"psql failed: {e.stderr.strip()}", file=sys.stderr)  # noqa: T201
         sys.exit(1)
 
 
-def database_exists(dbname: str) -> bool:
-    """Check if a database exists."""
-    try:
-        result = subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-U", "postgres", "-lqt"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return dbname in [
-            line.split("|")[0].strip() for line in result.stdout.splitlines()
-        ]
-    except subprocess.CalledProcessError as e:
-        print(  # noqa: T201
-            f"Error checking database existence: {e.stderr.strip()}", file=sys.stderr
-        )
-        return False
-
-
 def main() -> None:
-    """Set up the PostgreSQL database and user with appropriate privileges."""
-    # Create or update user with superuser, createdb, createrole, and login privileges
-    run_psql_command(
-        f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{DB_USER}') THEN
-                CREATE USER {DB_USER}
-                WITH SUPERUSER CREATEDB CREATEROLE LOGIN
-                PASSWORD '{DB_PASSWORD}';
-            ELSE
-                ALTER USER {DB_USER}
-                WITH SUPERUSER CREATEDB CREATEROLE LOGIN
-                PASSWORD '{DB_PASSWORD}';
-            END IF;
-        END $$;
-        """
+    run_psql(
+        {
+            "owner_user": DB_OWNER_USER,
+            "owner_password": DB_OWNER_PASSWORD,
+            "db_name": DB_NAME,
+        },
+        sql=CREATE_OWNER_SQL,
+    )
+    run_psql({"owner_user": DB_OWNER_USER}, sql=OWN_PUBLIC_SCHEMA_SQL, dbname=DB_NAME)
+    run_psql(
+        {
+            "ro_user": DB_READONLY_USER,
+            "ro_password": DB_READONLY_PASSWORD,
+            "db_name": DB_NAME,
+            "owner_role": DB_OWNER_USER,
+        },
+        sql_file=READONLY_ROLE_SQL,
+        dbname=DB_NAME,
     )
 
-    # Create the database if it doesn't exist
-    if not database_exists(DB_NAME):
-        run_psql_command(f"CREATE DATABASE {DB_NAME} OWNER {DB_USER};")
-    else:
-        print(f"Database {DB_NAME} already exists, skipping creation.")  # noqa: T201
-
-    # Set the database timezone to UTC
-    run_psql_command(f"ALTER DATABASE {DB_NAME} SET timezone TO 'UTC';", dbname=DB_NAME)
-
-    # Grant all privileges on the database to the user
-    run_psql_command(f"GRANT ALL PRIVILEGES ON DATABASE {DB_NAME} TO {DB_USER};")
-
-    print("Database setup completed successfully.")  # noqa: T201
+    print(  # noqa: T201
+        "Database setup completed.\n"
+        f"  seed as : postgresql+psycopg2://{DB_OWNER_USER}:***@localhost:5432/{DB_NAME}\n"
+        f"  API uses: postgresql+psycopg2://{DB_READONLY_USER}:***@localhost:5432/{DB_NAME}"
+    )
 
 
 if __name__ == "__main__":

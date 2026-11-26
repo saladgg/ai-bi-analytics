@@ -90,7 +90,7 @@ Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
 ## Features
 
 ### NL → SQL with strict guardrails
-The validator rejects anything that isn't a single `SELECT`. `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, multi-statement payloads, and comments-as-injection are all blocked before the query reaches the database. The DB user itself should also be read-only (see [`.env.example`](.env.example) — `readonly_user`).
+The validator rejects anything that isn't a single `SELECT`. `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, multi-statement payloads, and comments-as-injection are all blocked before the query reaches the database. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
 
 ### Dynamic schema introspection
 Schemas are reflected at request time via SQLAlchemy and passed to the LLM. No hard-coded schema strings means no schema drift between code and prompts.

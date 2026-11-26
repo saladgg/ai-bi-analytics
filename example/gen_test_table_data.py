@@ -5,6 +5,7 @@
 
 """
 
+import os
 import random
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -15,8 +16,13 @@ from faker import Faker
 # ──────────────────────────────────────────────────────────────────────────────
 #   CONFIGURATION - CHANGE THESE VALUES
 # ──────────────────────────────────────────────────────────────────────────────
-# Assumed the postres service points to port 5433 on the host
-DATABASE_URL = "postgresql+psycopg2://test_user:test_pwd@localhost:5433/ai_bi_db"
+# Seeding needs the OWNER role (it creates and writes tables) — never the
+# read-only role the API uses. Default assumes the compose Postgres on
+# host port 5433.
+DATABASE_URL = os.getenv(
+    "SEED_DATABASE_URL",
+    "postgresql+psycopg2://test_user:test_pwd@localhost:5433/ai_bi_db",
+)
 # ──────────────────────────────────────────────────────────────────────────────
 
 fake = Faker()

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
         database_url (str): SQLAlchemy database connection string.
         llm_provider (str): LLM provider identifier.
         openai_api_key (str | None): OpenAI API key if used.
+        db_statement_timeout_ms (int): Server-side cap on any single query.
+        db_idle_in_transaction_timeout_ms (int): Server-side cap on a
+            session sitting idle inside an open transaction.
     """
 
     app_name: str = Field(default="ai-bi-backend", alias="APP_NAME")
@@ -29,6 +32,13 @@ class Settings(BaseSettings):
 
     api_key: str = Field(alias="API_KEY")
     database_url: str = Field(alias="DATABASE_URL")
+    db_statement_timeout_ms: int = Field(
+        default=5000, gt=0, alias="DB_STATEMENT_TIMEOUT_MS"
+    )
+    db_idle_in_transaction_timeout_ms: int = Field(
+        default=10000, gt=0, alias="DB_IDLE_IN_TRANSACTION_TIMEOUT_MS"
+    )
+
 
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")

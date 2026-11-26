@@ -32,7 +32,7 @@ unless a dependency is noted.
 
 ## Phase 0 — Stop the bleeding (security + broken build) 🔴 ✅ (one decision open)
 
-- [x] **SEC-2 — Enforce read-only at the database.** `2c6eb2e`
+- [x] **SEC-2 — Enforce read-only at the database.** — *fix(security): enforce read-only query execution…*
   - [x] `db/session.py` `build_engine_kwargs`: Postgres connections start
     with `default_transaction_read_only=on`, `statement_timeout` and
     `idle_in_transaction_session_timeout` (new settings
@@ -57,7 +57,7 @@ unless a dependency is noted.
     plus manual role creation for pre-existing compose volumes).
   - [x] `tests/integration/test_postgres_readonly.py`, verified on
     Postgres 18.
-- [x] **SEC-1 + CQ-1 — AST guard.** `d0b3557`
+- [x] **SEC-1 + CQ-1 — AST guard.** — *fix(security): replace substring SQL checks with an AST guard*
   - [x] `sqlglot` postgres dialect; exactly one statement; root is `Select`
     or a set operation (`WITH` parses as a `Select` with CTEs). Empty and
     comment-only trailers (`;;`, `; -- done`) don't count as statements.
@@ -78,7 +78,7 @@ unless a dependency is noted.
   - [x] Corpus in `tests/test_sql_validator.py`: every verified bypass,
     nested and CTE variants, catalogs, unknown tables, and false-positive
     regressions.
-- [x] **SEC-3 — Make the rate limiter actually limit.** `c33e2cf`
+- [x] **SEC-3 — Make the rate limiter actually limit.** — *fix(security): make the rate limiter actually limit*
   - [x] Lua returns `{allowed, count, retry_after_ms}`, uses Redis `TIME`,
     ms scores, unique `now_ms:uuid` members, and `PEXPIRE`.
   - [x] Python branches on `allowed`. 429s carry `Retry-After` and
@@ -94,13 +94,13 @@ unless a dependency is noted.
     dependency).
   - [x] `fakeredis[lua]` runs the real script in tests; the route also
     exercises the real cache module now. Re-verified on `redis-server`.
-- [x] **OPS-1 — Clean-clone build, no secrets in images.** `02b54a6`
+- [x] **OPS-1 — Clean-clone build, no secrets in images.** — *fix(build): make clean-clone Docker builds…*
   - [x] `uv.lock` committed; `uv.lock` and `*.dockerignore` removed from
     `.gitignore`.
   - [x] `.dockerignore` added.
   - [x] Verified: a fresh `git clone` builds, and a canary `.env` is absent
     from the image.
-- [x] **PKG-1 — Ship an importable wheel.** `02b54a6`
+- [x] **PKG-1 — Ship an importable wheel.** — *fix(build): make clean-clone Docker builds…*
   - [x] Package discovery and Lua package-data.
   - [x] `build` removed from runtime deps; `version = "1.0.0"` (PSR
     `version_toml` switched to number format `:nf` so it stays PEP 440).
@@ -139,29 +139,37 @@ unless a dependency is noted.
     limiter and logs.
   - [ ] Startup validation outside dev: ≥ 32 chars, not `change-me`.
   - [ ] Remove `print("API KEY:", …)` from `frontend/api.py`.
-- [ ] **CI-1 — CI gates.**
-  - [ ] Trigger on `pull_request` + `push: main`.
-  - [ ] Add a `make check` target: `ruff format --check .`, `ruff check .`,
-    `mypy`; CI runs that instead of `make format`. Extend ruff to `tests/`,
-    `frontend/` and `example/`.
-  - [ ] `pytest --cov-branch --cov-fail-under=<n>`; upload coverage
-    (Coveralls, to make the README badge real) or remove the badge.
+- [ ] **CI-1 — CI gates.** (partly shipped with Phase 0 — *ci: gate
+  releases on green CI and enforce 100% coverage*)
+  - [x] Trigger on `pull_request` + `push: main`.
+  - [x] CI runs a check-only `make format-check` instead of `make format`.
+  - [ ] Extend ruff/mypy to `tests/`, `frontend/` and `example/` (needs a
+    one-off reformat of the test files first).
+  - [x] `--cov-branch --cov-fail-under=100` in pytest `addopts` and
+    `[tool.coverage]`: line and branch coverage are both gated at 100%.
+  - [ ] Upload coverage (Coveralls, to make the README badge real) or
+    remove the badge.
   - [ ] `uv audit` or `pip-audit`; `bandit -r ai_bi_analytics` (or
     CodeQL); Dependabot for `uv`, `github-actions` and `docker`.
-  - [ ] Docker build job (+ Trivy/Grype scan) and the PKG-1 wheel smoke
-    test.
-  - [ ] Release only after CI is green (one workflow with
-    `needs: [lint-test, build]`, or `workflow_run` on CI success). Pin
-    actions to SHAs, pin the PSR version, and delete the "Debug Git state"
-    step.
+  - [ ] Docker build job (+ Trivy/Grype scan). The PKG-1 wheel smoke test
+    shipped in Phase 0.
+  - [x] Release only after CI is green, mirroring menu-yetu:
+    `workflow_run` on CI success for `main`, releasing the exact validated
+    SHA, a serialized non-cancelling concurrency group, SHA-pinned actions,
+    pinned uv and PSR (9.21.1), the debug step removed, and
+    `build_command = "uv lock && uv build"` with `uv.lock` committed as a
+    release asset.
+  - [ ] SHA-pin the actions in `ci.yaml` too (only `release.yaml` holds a
+    write token, so it went first).
 - [ ] **TEST-1 — Tests that would have caught Phase 0.**
-  - [ ] `fakeredis[lua]` for the limiter and cache; remove the dead
-    `redis_client.eval` patch test.
-  - [ ] An `integration` marker with a Postgres service container in CI:
+  - [x] `fakeredis[lua]` for the limiter and cache; remove the dead
+    `redis_client.eval` patch test. (Shipped with SEC-3.)
+  - [ ] An `integration` marker (exists since SEC-2; runs locally when
+    `TEST_POSTGRES_*_URL` are set) with a Postgres service container in CI:
     executor + read-only role (a write attempt must fail) + validator
     corpus end to end + multi-statement attempt.
-  - [ ] Route tests that exercise the real `services/cache.py` (stop
-    patching the cache functions).
+  - [x] Route tests that exercise the real `services/cache.py` (stop
+    patching the cache functions). (Shipped with SEC-3.)
   - [ ] Error-path tests for each SEC-4 status code; prompt-content tests
     for `nl_to_sql` and `explanation`; `schema_loader` output test.
 

@@ -321,7 +321,7 @@ make test        # pytest with coverage
 make clean       # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
 ```
 
-Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. Coverage is reported in the terminal; the Coveralls upload isn't wired into CI yet (CI-1).
+Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`. The Coveralls upload isn't wired into CI yet (CI-1).
 
 The integration suite in [`tests/integration/`](tests/integration/) checks the read-only guarantees against a real PostgreSQL. It is skipped unless both URLs are set, e.g. against the compose Postgres:
 
@@ -343,6 +343,14 @@ Versioning and changelog are automated via [python-semantic-release](https://pyt
 | `fix:`, `perf:`, `refactor:` | patch        |
 | `BREAKING CHANGE:` footer    | major        |
 | `docs:`, `chore:`, `ci:`, `test:`, `style:`, `build:` | none |
+
+Releases are fully automated and gated on CI:
+
+1. A PR runs CI (format check, lint + mypy, tests at 100% coverage, wheel smoke test).
+2. On merge, CI runs again on `main`.
+3. Only if that run succeeds does [`release.yaml`](.github/workflows/release.yaml) run semantic-release, on the exact commit CI validated. It bumps the version, re-locks `uv.lock`, updates the changelog, tags, and publishes a GitHub release with the wheel and sdist attached.
+
+Releases are serialized, so two quick merges can't collide. A red build is never released.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the generated history.
 

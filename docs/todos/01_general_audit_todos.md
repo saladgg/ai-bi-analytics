@@ -5,19 +5,24 @@ IDs match that file; evidence, file:line references and rationale live
 there. Ship order is phase order. Items within a phase are independent
 unless a dependency is noted.
 
-> **Status (2026-11-26):** **Phases 0 and 1 shipped.** Phase 0 (SQL guard,
-> read-only database, rate limiter, build and packaging) was released as
-> v1.0.1 through the CI-gated pipeline. Phase 1 (typed errors, bounded
-> results, prompt separation, query scope, per-client API keys, and CI
-> that lints the whole repo, audits dependencies, scans the image and
-> secrets, and runs the Postgres integration suite) is on
-> `fix/phase1-request-path-and-ci`; its `feat(auth)` commit makes the next
-> release a minor one. pip-audit and Trivy are clean.
+> **Status (2026-11-27):** **Phases 0, 1 and 2 shipped.** Phase 0 was
+> released as v1.0.1 and Phase 1 as v1.1.0, both through the CI-gated
+> pipeline. Phase 2 (operability) is on `feat/phase2-operability`:
+> - OPS-3: liveness/readiness, connect timeouts, clean shutdown;
+> - OPS-2: JSON logs carrying trace ids, OTLP traces across every
+>   pipeline stage plus SQL/Redis/LLM, and `aibi.*` metrics;
+> - PERF-3: a fail-open cache and an explicit limiter outage policy;
+> - OPS-4: a non-root, digest-pinned 343 MB image and a hardened compose.
 >
-> **Open decisions:** the broken v1.0.0 release assets (PKG-1), enabling
-> Coveralls, and bumping uv in both repos (OPS-4). **Next:** Phase 2
-> (OPS-2 observability, OPS-3 health and lifecycle, the rest of OPS-4,
-> PERF-3).
+> Its `feat` commits make the next release minor (1.2.0). Running the
+> full compose stack surfaced two bugs the unit suite couldn't: the image
+> crashed on startup (missing package metadata) and error responses
+> dropped rate-limit headers. Both are fixed, and CI now boots the image.
+>
+> **Open decisions:** the broken v1.0.0 release assets (PKG-1) and
+> bumping uv in both repos (OPS-4). Coveralls is now reporting.
+> **Next:** Phase 3 (architecture, performance, code quality), starting
+> with ARCH-2 (central config).
 
 ---
 
@@ -200,51 +205,101 @@ Postgres 18, at 100% line and branch coverage.
     prompt-content tests (`test_prompts.py`); `schema_loader` output
     tests (`test_query_scope.py`).
 
-## Phase 2 — Operability 🟠
+## Phase 2 — Operability 🟠 ✅ (uv bump open, shared with menu-yetu)
 
-- [ ] **OPS-2 — Wire observability for real.**
-  - [ ] JSON logging (`structlog` or `python-json-logger`) honouring
-    `settings.log_level`; delete the `DEBUG`/`OTEL_ENABLED` `os.getenv`s
-    and the dead `"app"` logger.
-  - [ ] A request-id middleware (accept the inbound `X-Request-ID` or
-    generate one), bound into the log context and echoed in responses.
-  - [ ] OTel SDK bootstrap in `lifespan` behind `OTEL_ENABLED`: OTLP
-    exporter, service resource attributes, and FastAPI + SQLAlchemy +
-    Redis + HTTPX + logging instrumentors.
-  - [ ] Manual spans per pipeline stage, with LLM token usage as span
-    attributes.
-  - [ ] Metrics: LLM latency/tokens/cost, cache hit ratio, validator
-    rejections by reason, rate-limit denials, rows returned, truncations.
-  - [ ] Decide the logging policy for raw questions and SQL (INFO vs
-    DEBUG, redaction).
-  - [ ] Correct the README's observability section to match what ships.
+- [x] **OPS-2 — Wire observability for real.** *feat(ops): structured
+  logs, OTLP traces and metrics across the query pipeline*
+  - [x] JSON logging honouring `LOG_LEVEL`; `LOG_FORMAT` (JSON outside
+    dev, text in dev). *Deviation:* a ~30-line in-repo `JsonFormatter`
+    instead of `structlog`/`python-json-logger`, so no new dependency.
+    The `DEBUG`/`OTEL_ENABLED` `os.getenv`s and the dead `"app"` logger
+    are gone.
+  - [x] Request-id middleware (shipped with SEC-4 in Phase 1).
+    `ContextLogFilter` now adds `trace_id`/`span_id` from the active span,
+    so no logging instrumentor is needed.
+  - [x] OTel bootstrap in `lifespan` behind `OTEL_ENABLED`: OTLP over
+    http/protobuf or grpc (standard `OTEL_*` variables), service resource
+    attributes, FastAPI (health excluded), SQLAlchemy and Redis
+    instrumentation. *HTTPX not applicable:* openai 3.x uses `httpx2`,
+    which has no instrumentor, so the LLM call gets a manual span.
+  - [x] Manual spans per pipeline stage; the LLM span uses GenAI semconv
+    attributes, including input/output token usage.
+  - [x] Metrics: `aibi.queries`, `aibi.cache.lookups`, `aibi.errors` (by
+    code, which covers validator rejections), `aibi.rate_limit.denials`,
+    `aibi.llm.duration`, `aibi.llm.tokens`, `aibi.query.rows`,
+    `aibi.query.truncated`. *Not done:* LLM cost, which needs a price
+    table per model; that belongs with FEAT-9 spend controls.
+  - [x] Logging policy: SQL logged at INFO (generated, scope-bound);
+    questions logged as sha256 prefix + length unless `LOG_QUESTIONS`.
+  - [x] README observability section rewritten.
+  - [x] *Found on the way:* `opentelemetry-instrumentation-sqlalchemy`
+    0.66b2 (latest) declares `sqlalchemy < 2.1`, and Phase 1's relock
+    moved to 2.1.9, so it silently instrumented nothing. Now forced with
+    `skip_dep_check=True` (the cursor-execute hooks it uses are unchanged
+    in 2.1), plus `greenlet`, which its setup imports and SQLAlchemy 2.1 no
+    longer installs. A test asserts SQL spans appear. **Remove the
+    override once upstream declares 2.1 support.**
+  - [x] Verified against a real OpenTelemetry Collector (OTLP/HTTP): the
+    request span, stage, LLM, Redis and SQL spans and the `aibi.*` metrics
+    arrived, and a JSON log line's `trace_id` matched 27 exported spans.
 - [ ] **OPS-3 — Health and lifecycle.** `/api/health/live` +
   `/api/health/ready` (DB `SELECT 1` + Redis `PING`, short timeouts,
   unauthenticated, rate-limit-exempt); dispose the engine and close Redis
   in `lifespan` teardown; Dockerfile `HEALTHCHECK`; compose
   `healthcheck` + `depends_on: condition: service_healthy`.
-- [ ] **OPS-4 — Container and compose hardening.** (Partly pulled into
-  Phase 1 by the Trivy work: an apt upgrade layer, no pip, uv
-  bind-mounted at build time only, no baked uv cache, a
-  `.venv/bin/uvicorn` CMD, and the compose `/app/.venv` volume.)
-  - [ ] Non-root `USER`, base pinned by digest, add `--proxy-headers`
-    and `--timeout-graceful-shutdown 20` to the CMD; decide worker count.
-    (A separate builder stage is no longer needed for size: uv and its
-    cache already stay out of the image.)
+- [x] **OPS-4 — Container and compose hardening.** (Partly pulled into
+  Phase 1 by the Trivy work: an apt upgrade layer, no pip, uv bind-mounted
+  at build time only, no baked uv cache, a `.venv/bin/uvicorn` CMD.)
+  *build(docker): non-root, digest-pinned, demo-free API image; hardened
+  compose*
+  - [x] Non-root `USER app` (uid/gid 10001; app code root-owned and
+    read-only to it). Python and uv images pinned by digest.
+    `--proxy-headers` and `--timeout-graceful-shutdown 20` on the CMD.
+    Workers: uvicorn's `WEB_CONCURRENCY` (default 1), preferring one per
+    container and scaling out. A separate builder stage isn't needed:
+    uv and its cache stay out of the image.
+  - [x] The project itself is installed in the image. *Found on the way:*
+    OPS-2 reads the version from package metadata, which
+    `--no-install-project` never installed, so **the container crashed on
+    startup**; unit tests passed because the dev venv installs the
+    project. Also fixed with a `0+unknown` fallback (folded into the OPS-2
+    commit), and CI's Docker job now starts the image and waits for it to
+    turn healthy as non-root.
+  - [x] streamlit, pandas, plotly, python-dotenv and requests moved to a
+    `frontend` dependency group (included in `dev`). Image size:
+    906 MB → 343 MB.
+  - [x] Compose:
+    - `version:` dropped, ports bound to `127.0.0.1`, Redis
+      `--requirepass` (healthcheck via `REDISCLI_AUTH`).
+    - The API gets in-network `DATABASE_URL`/`REDIS_URL` (read-only
+      role), so it no longer depends on `.env` having compose-specific
+      values.
+    - Start command matches the image's; `restart: unless-stopped`.
+    - *Deviation:* the source bind mount and `--reload` went into a
+      tracked `docker-compose.dev.yml` (`make docker-up-dev`; `:z` for
+      SELinux) rather than `compose.override.yaml`, which `.gitignore`
+      reserves for personal overrides.
+  - [x] Verified the full stack: every service healthy, `/ready` OK,
+    Redis refusing unauthenticated clients, Postgres showing the API only
+    as `ai_bi_readonly`, and the dev overlay reloading on a source change.
+    Trivy: 0 fixable CRITICAL/HIGH.
   - [ ] **uv 0.10.9 itself has CVEs** (bundled zip, quinn-proto,
     rustls-webpki crates; Trivy, 2026-11-26). It no longer ships in the
     image, but CI, the release job and developer machines still run it,
     and menu-yetu pins the same version. Bump both repos together.
-  - [ ] Move streamlit, pandas, plotly, python-dotenv and requests into a
-    `frontend` optional dependency group (or a separate
-    `frontend/pyproject.toml`); the API image installs without them.
-  - [ ] Compose: drop `version:`, bind ports to `127.0.0.1`, Redis
-    `--requirepass`, non-superuser app credentials (SEC-2), source bind
-    mount only in `compose.override.yaml`, one start command shared with
-    the Dockerfile.
-- [ ] **PERF-3 — Cache resilience.** Cache get/set fail open (log and
-  continue); `RATE_LIMIT_FAIL_OPEN` setting; normalised question in the key;
-  configurable TTL; size cap (with SEC-5); hit/miss metric (with OPS-2).
+- [x] **PERF-3 — Cache resilience.** *fix(ops): make the cache fail open
+  and give the rate limiter an explicit Redis-outage policy*
+  - [x] Cache reads and writes fail open: logged, counted as
+    `aibi.cache.lookups{result=error}`, and the request proceeds uncached.
+    Corrupt entries read as misses.
+  - [x] `RATE_LIMIT_FAIL_OPEN`, default **false**: a Redis outage returns
+    503, keeping LLM spend bounded. When true, requests are served
+    unthrottled and counted in `aibi.rate_limit.fail_open`.
+  - [x] Normalised question (casefold, collapsed whitespace) in the key,
+    with a separator so question and schema can't collide by
+    concatenation.
+  - [x] `CACHE_TTL_SECONDS` (0 disables caching). The size cap shipped with
+    SEC-5; hit/miss metrics with OPS-2.
 
 ## Phase 3 — Architecture, performance, code quality 🟡
 
@@ -268,13 +323,18 @@ Postgres 18, at 100% line and branch coverage.
   process (from `lifespan`), `timeout≈20s`, `max_retries=2`; decide between
   async (`AsyncOpenAI` + async route ± `asyncpg`) and a sized threadpool,
   and write the decision down; optional `explain=false` request flag.
-- [ ] **ARCH-4 — Lua loading.** `importlib.resources`, registered once at
-  startup (pairs with PKG-1 package-data).
-- [ ] **CQ-2 — Cleanup.** Delete `core/security.py` (or give it SEC-8's
-  code); move `Product` to `tests/fixtures`; app version from
-  `importlib.metadata`; drop `black`/`isort` (ruff covers both); remove
-  the misplaced `noqa`; re-enable mypy `union-attr`/`arg-type` and fix
-  what surfaces (`request.client` may be `None`).
+- [x] **ARCH-4 — Lua loading.** Shipped with SEC-3 in Phase 0: the script
+  is read once via `importlib.resources` (cached) and packaged as
+  package-data (PKG-1). `register_script` per call only hashes the source
+  client-side, so there's no per-request I/O or round trip.
+- [ ] **CQ-2 — Cleanup.**
+  - [x] `core/security.py` holds SEC-8's key store (Phase 1).
+  - [x] `black`/`isort` dropped (Phase 1).
+  - [x] The misplaced `noqa` went with SEC-4's route rewrite.
+  - [ ] Move `Product` to `tests/fixtures`.
+  - [x] App version from `importlib.metadata` (`telemetry.SERVICE_VERSION`,
+    used by FastAPI and the OTel resource; OPS-2).
+  - [ ] Re-enable mypy `union-attr`/`arg-type` and fix what surfaces.
 - [ ] **CQ-3 — Streamlit fixes.** `auto_chart` picks the first categorical
   and first numeric column (fixes the `IndexError` on 2–3 column results);
   POST to `/api/query` without the slash; friendly error rendering; show

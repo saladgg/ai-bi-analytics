@@ -14,7 +14,10 @@ import re
 import uuid
 from contextvars import ContextVar
 
+from opentelemetry import trace
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from ai_bi_analytics.core import metrics
 
 REQUEST_ID_HEADER = "x-request-id"
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -67,6 +70,7 @@ class RequestIdMiddleware:
             await self.app(scope, receive, send_with_request_id)
         except Exception:
             logger.exception("Unhandled error")
+            metrics.errors.add(1, {"code": "internal_error"})
             if response_started:
                 raise
             body = json.dumps(
@@ -87,9 +91,19 @@ class RequestIdMiddleware:
             _request_id.reset(token)
 
 
-class RequestIdLogFilter(logging.Filter):
-    """Adds ``record.request_id`` for the log format."""
+class ContextLogFilter(logging.Filter):
+    """
+    Adds ``request_id`` and the active OpenTelemetry ``trace_id`` /
+    ``span_id`` to every record, so a log line can be joined to its trace.
+    The ids are ``-`` outside a request or when tracing is disabled.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = get_request_id()
+        context = trace.get_current_span().get_span_context()
+        if context.is_valid:
+            record.trace_id = format(context.trace_id, "032x")
+            record.span_id = format(context.span_id, "016x")
+        else:
+            record.trace_id = record.span_id = "-"
         return True

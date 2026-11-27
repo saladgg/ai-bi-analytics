@@ -32,15 +32,16 @@ dependencies = [
   "SQLAlchemy>=2.0.46",
   "psycopg2-binary>=2.9.11",
   "openai>=3.60.0",
-  "python-dotenv>=1.2.1",
   "redis>=7.2.0",
   "opentelemetry-instrumentation-fastapi>=0.61b0",
   "opentelemetry-sdk>=1.40.0",
   "opentelemetry-exporter-otlp>=1.40.0",
-  "streamlit>=1.55.0",
-  "pandas==2.3.3",
-  "plotly==6.6.0",
   "sqlglot>=30.35.0",
+  "opentelemetry-instrumentation-sqlalchemy>=0.66b2",
+  "opentelemetry-instrumentation-redis>=0.66b2",
+  # Imported by opentelemetry-instrumentation-sqlalchemy's setup (its async
+  # engine support); SQLAlchemy 2.1 no longer installs it by default.
+  "greenlet>=3.2",
 ]
 
 [dependency-groups]
@@ -53,10 +54,21 @@ test = [
 ]
 dev = [
   { include-group = "test" },
+  # The Streamlit demo's deps, so lint/mypy (and the demo) work in dev.
+  { include-group = "frontend" },
   "ruff>=0.15.1",
   "mypy>=1.19.1",
   "pre-commit>=4.5.0",
   "pip-audit~=2.10",
+]
+# Streamlit demo UI (frontend/). Not in the API image: `uv sync` installs
+# only the default `dev` group, and the Dockerfile's --no-dev drops that.
+frontend = [
+    "pandas==2.3.3",
+    "plotly==6.6.0",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32",
+    "streamlit>=1.55.0",
 ]
 
 [project.urls]

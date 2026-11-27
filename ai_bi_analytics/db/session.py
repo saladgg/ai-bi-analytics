@@ -28,6 +28,7 @@ from ai_bi_analytics.core.config import settings
 logger = logging.getLogger(__name__)
 
 DEVELOPMENT_ENV = "development"
+CONNECT_TIMEOUT_SECONDS = 5
 
 
 def is_postgres_url(database_url: str) -> bool:
@@ -52,6 +53,9 @@ def build_engine_kwargs(
     kwargs: dict[str, Any] = {"pool_pre_ping": True}
     if is_postgres_url(database_url):
         kwargs["connect_args"] = {
+            # Fail fast on an unreachable host instead of hanging requests
+            # and readiness probes on the OS TCP timeout (audit OPS-3).
+            "connect_timeout": CONNECT_TIMEOUT_SECONDS,
             "options": (
                 "-c default_transaction_read_only=on "
                 f"-c statement_timeout={statement_timeout_ms} "
@@ -60,7 +64,7 @@ def build_engine_kwargs(
                 # Unqualified names resolve in the queryable schema (SEC-7).
                 # Validated as a plain identifier in Settings.
                 f"-c search_path={search_path}"
-            )
+            ),
         }
     return kwargs
 

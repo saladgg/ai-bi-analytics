@@ -138,3 +138,21 @@ def test_query_endpoint_returns_rate_limit_headers_then_429(
     blocked = client.post("/api/query", json=payload)
     assert blocked.status_code == 429
     assert "Retry-After" in blocked.headers
+
+
+def test_error_responses_keep_rate_limit_headers(client, monkeypatch):
+    """A request that passed the limiter but then failed (here: unsafe SQL)
+    still reports the caller's remaining budget."""
+    from ai_bi_analytics.services import nl_to_sql
+
+    class DropLLM:
+        def complete(self, prompt, system=None):
+            return "DROP TABLE products"
+
+    monkeypatch.setattr(nl_to_sql, "get_llm_client", lambda: DropLLM())
+
+    response = client.post("/api/query", json={"question": "drop it"})
+
+    assert response.status_code == 422
+    assert response.headers["X-RateLimit-Limit"] == str(LIMIT)
+    assert response.headers["X-RateLimit-Remaining"] == str(LIMIT - 1)

@@ -33,7 +33,10 @@ export API_BASE_URL=http://localhost:8000
 
 ## ▶️ Run the app
 
+The demo's dependencies (Streamlit, pandas, Plotly, requests) live in the
+`frontend` dependency group, so the API image doesn't carry them.
+`make install-dev` installs them; `make run_frontend` runs the app with them:
 
 ```bash
-make run_frontend
+make run_frontend   # = uv run --group frontend streamlit run frontend/streamlit_app.py
 ```

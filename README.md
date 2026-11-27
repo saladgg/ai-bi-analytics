@@ -98,16 +98,28 @@ Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglo
 Tables and views in the queryable schema are reflected at request time via SQLAlchemy, narrowed to `QUERYABLE_TABLES` with `REDACTED_COLUMNS` removed, and passed to the LLM. The guard enforces that same scope, so the model is never shown anything it can't query, and the reverse. No hard-coded schema strings means no schema drift between code and prompts.
 
 ### Redis distributed cache
-Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
+Identical `(question, schema)` pairs reuse prior responses, ignoring case and whitespace in the question. The schema is part of the key, so a scope change never serves a stale answer. The TTL is `CACHE_TTL_SECONDS` (default 5 minutes). This cuts LLM spend and trims p95 latency on repeated dashboard-style traffic. The cache is an optimisation, not a dependency: if Redis errors, the request proceeds uncached and the error is logged and counted.
 
 ### Sliding-window rate limiting
-Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
+Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`. If Redis is unreachable the limiter fails closed by default (503), which keeps LLM spend bounded; `RATE_LIMIT_FAIL_OPEN=true` serves requests unthrottled instead.
 
 ### Observability
-- **Logging** — request lifecycle, SQL and errors via the standard `logging` config in [`core/logging_config.py`](ai_bi_analytics/core/logging_config.py).
-- **OpenTelemetry** — FastAPI auto-instrumentation is enabled.
+- **Structured logs** ([`core/logging_config.py`](ai_bi_analytics/core/logging_config.py)):
+  - JSON (one object per line) outside development, readable text in development.
+  - Every line carries `request_id`, `trace_id` and `span_id`, plus structured fields such as `sql`, `row_count` and `client_id`.
+  - Questions are logged as a hash and length unless `LOG_QUESTIONS=true`, since they can contain sensitive text.
+- **Traces** (`OTEL_ENABLED=true`, exported over OTLP), in a single trace per request:
+  - the FastAPI request span, with health probes excluded;
+  - a span per pipeline stage (`query.scope`, `query.cache_lookup`, `query.generate_sql`, `query.validate`, `query.execute`, `query.explain`);
+  - SQLAlchemy and Redis spans nested under those stages;
+  - an LLM span with GenAI attributes and token usage.
+- **Metrics** (also OTLP):
+  - `aibi.queries` (by source and client), `aibi.cache.lookups` (hit/miss), `aibi.errors` (by code), `aibi.rate_limit.denials`;
+  - `aibi.llm.duration` and `aibi.llm.tokens`;
+  - `aibi.query.rows` and `aibi.query.truncated`;
+  - HTTP and DB-pool metrics from the auto-instrumentation.
 
-Not wired yet (tracked as OPS-2 in [`docs/todos`](docs/todos/01_general_audit_todos.md)): an OTLP exporter, DB/Redis/LLM spans, trace ids in log lines, JSON logs, and metrics.
+Point `OTEL_EXPORTER_OTLP_ENDPOINT` at an OpenTelemetry Collector (or any OTLP backend: Grafana Alloy, Tempo/Mimir, Honeycomb, …). With `OTEL_ENABLED=false` the instrumentation does nothing.
 
 ### API-key auth
 Each client sends its own key in the `x-api-key` header. The server stores only SHA-256 hashes (`API_KEYS=client_id:hash,...`), compares in constant time against every entry, and identifies the caller for rate limiting and logs. To rotate a key, list the new entry next to the old one, then remove the old. Missing or unknown keys get `401`. Generate a key with `make api-key CLIENT=<id>`. See [`core/security.py`](ai_bi_analytics/core/security.py). Suitable for internal and service-to-service use; swap in OAuth/JWT for end-user auth.
@@ -126,7 +138,7 @@ A minimal Streamlit UI ships under [`frontend/`](frontend/) for exploring the AP
 | SQL guard              | sqlglot (AST parse + canonical regeneration)         |
 | Cache & rate limiting  | Redis 8 (Lua-scripted sliding window)                |
 | LLM provider           | OpenAI (abstracted behind `services/llm_client.py`)  |
-| Observability          | OpenTelemetry (FastAPI instrumentation)              |
+| Observability          | OpenTelemetry (OTLP traces + metrics), JSON logs     |
 | Frontend (demo)        | Streamlit + pandas + Plotly                          |
 | Containerization       | Docker + docker-compose                              |
 | Python tooling         | uv, ruff, mypy, pytest, fakeredis                    |
@@ -212,13 +224,22 @@ Brings up `api`, `postgres`, and `redis` in one command.
 
 ```bash
 make docker-build
-make docker-up
+make docker-up       # or: make docker-up-dev (source mounted, auto-reload)
 
 # In another shell, seed sample data (connects as the owner role)
-python example/gen_test_table_data.py
+uv run python example/gen_test_table_data.py
 
-make docker-down   # tear down (also removes named volumes)
+make docker-down     # tear down (also removes named volumes)
 ```
+
+The stack is self-contained:
+
+- The API reaches Postgres (as the read-only role) and Redis by service name, so `.env` only needs your API keys and LLM settings.
+- Every port is bound to `127.0.0.1`.
+- Redis requires a password (`REDIS_PASSWORD`, default `redis_dev_pwd`).
+- The API starts only once Postgres and Redis report healthy.
+
+The image runs as an unprivileged user (uid 10001), from a digest-pinned base, without the Streamlit demo's dependencies.
 
 The dockerized Postgres listens on host port **5433** (mapped to container 5432). On first start with an empty volume it creates the read-only `ai_bi_readonly` role the API should use. If your `postgres_data` volume predates that, see [example/README.md](example/README.md#which-script-do-i-need) for the one-line fix.
 
@@ -268,23 +289,37 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `MAX_RESULT_ROWS` | `1000` | Most rows per query; the guard caps `LIMIT`, and responses flag `truncated` |
 | `EXPLANATION_SAMPLE_ROWS` | `20` | Rows sent to the LLM for the explanation |
 | `CACHE_MAX_BYTES` | `512000` | Larger responses aren't cached |
+| `CACHE_TTL_SECONDS` | `300` | Response cache lifetime; `0` disables caching |
 | `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
-| `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |
+| `RATE_LIMIT_FAIL_OPEN` | `false` | With Redis unreachable: `false` → 503, `true` → serve unthrottled |
+| `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store (include the password: `redis://:<pw>@host:6379/0`) |
+| `WEB_CONCURRENCY` | `1` | uvicorn worker processes. Prefer one per container and scale out |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies uvicorn trusts for `X-Forwarded-For` |
 | `LLM_PROVIDER` / `OPENAI_API_KEY` | `openai` / — | LLM backend |
+| `LOG_LEVEL` | `INFO` | Root and uvicorn log level |
+| `LOG_FORMAT` | `json` outside dev, `text` in dev | Log line format |
+| `LOG_QUESTIONS` | `false` | Log question text instead of a hash + length |
+| `OTEL_ENABLED` | `false` | Export traces and metrics over OTLP. Configure with the standard `OTEL_EXPORTER_OTLP_*` and `OTEL_SERVICE_NAME` variables |
 
 ---
 
 ## API usage
 
-`/api/query` requires an `x-api-key` header holding a client key (see [API-key auth](#api-key-auth)); `/api/health` is open.
+`/api/query` requires an `x-api-key` header holding a client key (see [API-key auth](#api-key-auth)); the `/api/health` endpoints are open.
 
 ### Health
 
 ```
-GET /api/health  →  {"status": "ok"}
+GET /api/health/live   →  200 {"status": "ok"}
+GET /api/health/ready  →  200 {"status": "ok", "checks": {"database": "ok", "redis": "ok"}}
+                          503 {"status": "unavailable", "checks": {"database": "ok", "redis": "error"}}
 ```
+
+- `live`: the process is serving. The Docker `HEALTHCHECK` uses it. `/api/health` is an alias.
+- `ready`: Postgres and Redis both answer. Point load balancers and readiness probes here.
+
+Postgres and Redis connections have short connect timeouts, so an unreachable dependency fails fast with a 503 instead of hanging requests. Shutdown closes both pools cleanly.
 
 ### Query
 
@@ -399,8 +434,9 @@ Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings pa
 
 - **Phase 0:** SQL guard, read-only database, rate limiting, build and packaging.
 - **Phase 1:** typed errors, bounded results, prompt separation, allowlisted query scope, per-client API keys, and full CI gates.
+- **Phase 2:** liveness and readiness checks, OTLP traces and metrics with JSON logs, a fail-open cache, and a hardened non-root container.
 
-Next up is Phase 2: OpenTelemetry export and metrics, readiness checks, the rest of the container hardening, and cache resilience.
+Next up is Phase 3: central configuration, a query-pipeline service, a task-level LLM interface, schema caching, and the Streamlit fixes.
 
 ---
 

@@ -15,12 +15,19 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from redis.exceptions import RedisError
 from sqlalchemy.exc import DBAPIError
 
-from ai_bi_analytics.api.routes import query
+from ai_bi_analytics.api.routes import health, query
+from ai_bi_analytics.core import metrics
+from ai_bi_analytics.core import redis_client as redis_module
 from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.errors import AppError, DependencyUnavailableError
 from ai_bi_analytics.core.logging_config import setup_logging
 from ai_bi_analytics.core.request_context import RequestIdMiddleware, error_body
 from ai_bi_analytics.core.startup_checks import run_startup_checks
+from ai_bi_analytics.core.telemetry import (
+    SERVICE_VERSION,
+    flush_telemetry,
+    setup_telemetry,
+)
 from ai_bi_analytics.db.errors import translate_db_error
 from ai_bi_analytics.db.session import assert_database_role_is_safe, engine
 
@@ -32,7 +39,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logging.info("Starting %s in %s", settings.app_name, settings.env)
     run_startup_checks(settings)
     assert_database_role_is_safe(engine, settings.env)
+    setup_telemetry(settings, engine)
     yield
+    flush_telemetry()
+    # Graceful shutdown (audit OPS-3): close pooled connections so Postgres
+    # and Redis see clean disconnects rather than dropped sockets.
+    logging.info("Shutting down %s", settings.app_name)
+    engine.dispose()
+    redis_module.redis_client.close()
 
 
 def create_app() -> FastAPI:
@@ -52,34 +66,29 @@ def create_app() -> FastAPI:
             "natural-language querying over PostgreSQL with "
             "AI-powered SQL generation and explainable results."
         ),
-        version="0.1.0",
+        version=SERVICE_VERSION,
         lifespan=lifespan,
     )
 
-    FastAPIInstrumentor.instrument_app(app)
+    # Health probes run every few seconds; tracing them is noise.
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="api/health")
     register_exception_handlers(app)
     # Outermost: also turns unhandled exceptions into a JSON 500 with the
     # request id, instead of leaking or returning plain text.
     app.add_middleware(RequestIdMiddleware)
 
-    # main endpoint
     app.include_router(query.router, prefix="/api")
-
-    @app.get("/api/health", tags=["health"])
-    def health_check() -> dict[str, str]:
-        """
-        Health check endpoint used for monitoring and orchestration.
-
-        Returns:
-            dict: Application health status.
-        """
-        return {"status": "ok"}
+    app.include_router(health.router, prefix="/api")
 
     return app
 
 
-def _app_error_response(exc: AppError) -> JSONResponse:
+def _app_error_response(exc: AppError, request: Request) -> JSONResponse:
+    metrics.errors.add(1, {"code": exc.code})
     return JSONResponse(
+        # A fresh response would drop headers the route already set; keep
+        # the rate-limit headers so clients see them on errors too.
+        headers=getattr(request.state, "rate_limit_headers", None),
         status_code=exc.status_code,
         content=error_body(exc.code, exc.public_message),
     )
@@ -93,23 +102,23 @@ def register_exception_handlers(app: FastAPI) -> None:
     """
 
     @app.exception_handler(AppError)
-    async def handle_app_error(_request: Request, exc: AppError) -> JSONResponse:
+    async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         if exc.status_code >= 500:
             logger.error("%s: %s", exc.code, exc, exc_info=exc.__cause__)
         else:
             logger.warning("%s: %s", exc.code, exc)
-        return _app_error_response(exc)
+        return _app_error_response(exc, request)
 
     @app.exception_handler(DBAPIError)
-    async def handle_db_error(_request: Request, exc: DBAPIError) -> JSONResponse:
+    async def handle_db_error(request: Request, exc: DBAPIError) -> JSONResponse:
         error = translate_db_error(exc)
         logger.error("Database error mapped to %s", error.code, exc_info=exc)
-        return _app_error_response(error)
+        return _app_error_response(error, request)
 
     @app.exception_handler(RedisError)
-    async def handle_redis_error(_request: Request, exc: RedisError) -> JSONResponse:
+    async def handle_redis_error(request: Request, exc: RedisError) -> JSONResponse:
         logger.error("Redis error", exc_info=exc)
-        return _app_error_response(DependencyUnavailableError())
+        return _app_error_response(DependencyUnavailableError(), request)
 
 
 app = create_app()

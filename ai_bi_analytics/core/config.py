@@ -7,7 +7,7 @@ Ensures centralized configuration management.
 
 import os
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     app_name: str = Field(default="ai-bi-backend", alias="APP_NAME")
     env: str = Field(default="development", alias="ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    # None: JSON outside development, text in development (audit OPS-2).
+    log_format: Literal["json", "text"] | None = Field(default=None, alias="LOG_FORMAT")
+    # Questions are user text and may be sensitive: by default logs carry
+    # a hash and length, not the text.
+    log_questions: bool = Field(default=False, alias="LOG_QUESTIONS")
+    # Traces and metrics over OTLP; exporter settings come from the standard
+    # OTEL_EXPORTER_OTLP_* variables.
+    otel_enabled: bool = Field(default=False, alias="OTEL_ENABLED")
 
     api_key: SecretStr | None = Field(default=None, alias="API_KEY")
     api_keys: Annotated[list[str], NoDecode] = Field(
@@ -65,6 +73,9 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = Field(
         default=60, gt=0, alias="RATE_LIMIT_WINDOW_SECONDS"
     )
+    # When Redis is unreachable: false (default) rejects requests with 503,
+    # keeping LLM spend bounded; true serves them unthrottled.
+    rate_limit_fail_open: bool = Field(default=False, alias="RATE_LIMIT_FAIL_OPEN")
 
     queryable_schema: str = Field(default="public", alias="QUERYABLE_SCHEMA")
     queryable_tables: Annotated[list[str], NoDecode] = Field(
@@ -81,6 +92,7 @@ class Settings(BaseSettings):
         default=20, ge=1, le=500, alias="EXPLANATION_SAMPLE_ROWS"
     )
     cache_max_bytes: int = Field(default=512_000, ge=0, alias="CACHE_MAX_BYTES")
+    cache_ttl_seconds: int = Field(default=300, ge=0, alias="CACHE_TTL_SECONDS")
 
     max_question_length: int = Field(
         default=500, ge=10, le=4000, alias="MAX_QUESTION_LENGTH"
@@ -119,6 +131,22 @@ class Settings(BaseSettings):
         if not self.api_keys and not (self.api_key and self.api_key.get_secret_value()):
             raise ValueError("Configure API_KEYS (preferred) or API_KEY")
         return self
+
+    @field_validator("log_level")
+    @classmethod
+    def _known_log_level(cls, value: str) -> str:
+        level = value.upper()
+        if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ValueError(
+                "LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR or CRITICAL"
+            )
+        return level
+
+    @property
+    def effective_log_format(self) -> Literal["json", "text"]:
+        if self.log_format is not None:
+            return self.log_format
+        return "text" if self.env == "development" else "json"
 
     @field_validator("queryable_schema")
     @classmethod

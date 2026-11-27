@@ -42,6 +42,8 @@ def query_database(
     """
     rate_limit = enforce_rate_limit(request, f"client:{principal.client_id}")
     response.headers.update(rate_limit.headers())
+    # Error handlers build their own response; they copy these from here.
+    request.state.rate_limit_headers = rate_limit.headers()
     client = {"client_id": principal.client_id}
 
     # No blanket try/except: typed errors and DB/Redis failures are mapped

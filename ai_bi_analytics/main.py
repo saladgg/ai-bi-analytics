@@ -83,9 +83,12 @@ def create_app() -> FastAPI:
     return app
 
 
-def _app_error_response(exc: AppError) -> JSONResponse:
+def _app_error_response(exc: AppError, request: Request) -> JSONResponse:
     metrics.errors.add(1, {"code": exc.code})
     return JSONResponse(
+        # A fresh response would drop headers the route already set; keep
+        # the rate-limit headers so clients see them on errors too.
+        headers=getattr(request.state, "rate_limit_headers", None),
         status_code=exc.status_code,
         content=error_body(exc.code, exc.public_message),
     )
@@ -99,23 +102,23 @@ def register_exception_handlers(app: FastAPI) -> None:
     """
 
     @app.exception_handler(AppError)
-    async def handle_app_error(_request: Request, exc: AppError) -> JSONResponse:
+    async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         if exc.status_code >= 500:
             logger.error("%s: %s", exc.code, exc, exc_info=exc.__cause__)
         else:
             logger.warning("%s: %s", exc.code, exc)
-        return _app_error_response(exc)
+        return _app_error_response(exc, request)
 
     @app.exception_handler(DBAPIError)
-    async def handle_db_error(_request: Request, exc: DBAPIError) -> JSONResponse:
+    async def handle_db_error(request: Request, exc: DBAPIError) -> JSONResponse:
         error = translate_db_error(exc)
         logger.error("Database error mapped to %s", error.code, exc_info=exc)
-        return _app_error_response(error)
+        return _app_error_response(error, request)
 
     @app.exception_handler(RedisError)
-    async def handle_redis_error(_request: Request, exc: RedisError) -> JSONResponse:
+    async def handle_redis_error(request: Request, exc: RedisError) -> JSONResponse:
         logger.error("Redis error", exc_info=exc)
-        return _app_error_response(DependencyUnavailableError())
+        return _app_error_response(DependencyUnavailableError(), request)
 
 
 app = create_app()

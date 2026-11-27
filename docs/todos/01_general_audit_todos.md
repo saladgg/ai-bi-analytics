@@ -268,13 +268,18 @@ Postgres 18, at 100% line and branch coverage.
   process (from `lifespan`), `timeout≈20s`, `max_retries=2`; decide between
   async (`AsyncOpenAI` + async route ± `asyncpg`) and a sized threadpool,
   and write the decision down; optional `explain=false` request flag.
-- [ ] **ARCH-4 — Lua loading.** `importlib.resources`, registered once at
-  startup (pairs with PKG-1 package-data).
-- [ ] **CQ-2 — Cleanup.** Delete `core/security.py` (or give it SEC-8's
-  code); move `Product` to `tests/fixtures`; app version from
-  `importlib.metadata`; drop `black`/`isort` (ruff covers both); remove
-  the misplaced `noqa`; re-enable mypy `union-attr`/`arg-type` and fix
-  what surfaces (`request.client` may be `None`).
+- [x] **ARCH-4 — Lua loading.** Shipped with SEC-3 in Phase 0: the script
+  is read once via `importlib.resources` (cached) and packaged as
+  package-data (PKG-1). `register_script` per call only hashes the source
+  client-side, so there's no per-request I/O or round trip.
+- [ ] **CQ-2 — Cleanup.**
+  - [x] `core/security.py` holds SEC-8's key store (Phase 1).
+  - [x] `black`/`isort` dropped (Phase 1).
+  - [x] The misplaced `noqa` went with SEC-4's route rewrite.
+  - [ ] Move `Product` to `tests/fixtures`.
+  - [ ] App version from `importlib.metadata` (FastAPI still reports
+    `0.1.0`).
+  - [ ] Re-enable mypy `union-attr`/`arg-type` and fix what surfaces.
 - [ ] **CQ-3 — Streamlit fixes.** `auto_chart` picks the first categorical
   and first numeric column (fixes the `IndexError` on 2–3 column results);
   POST to `/api/query` without the slash; friendly error rendering; show

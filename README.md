@@ -224,13 +224,22 @@ Brings up `api`, `postgres`, and `redis` in one command.
 
 ```bash
 make docker-build
-make docker-up
+make docker-up       # or: make docker-up-dev (source mounted, auto-reload)
 
 # In another shell, seed sample data (connects as the owner role)
-python example/gen_test_table_data.py
+uv run python example/gen_test_table_data.py
 
-make docker-down   # tear down (also removes named volumes)
+make docker-down     # tear down (also removes named volumes)
 ```
+
+The stack is self-contained:
+
+- The API reaches Postgres (as the read-only role) and Redis by service name, so `.env` only needs your API keys and LLM settings.
+- Every port is bound to `127.0.0.1`.
+- Redis requires a password (`REDIS_PASSWORD`, default `redis_dev_pwd`).
+- The API starts only once Postgres and Redis report healthy.
+
+The image runs as an unprivileged user (uid 10001), from a digest-pinned base, without the Streamlit demo's dependencies.
 
 The dockerized Postgres listens on host port **5433** (mapped to container 5432). On first start with an empty volume it creates the read-only `ai_bi_readonly` role the API should use. If your `postgres_data` volume predates that, see [example/README.md](example/README.md#which-script-do-i-need) for the one-line fix.
 
@@ -284,7 +293,8 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
 | `RATE_LIMIT_FAIL_OPEN` | `false` | With Redis unreachable: `false` → 503, `true` → serve unthrottled |
-| `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |
+| `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store (include the password: `redis://:<pw>@host:6379/0`) |
+| `WEB_CONCURRENCY` | `1` | uvicorn worker processes. Prefer one per container and scale out |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies uvicorn trusts for `X-Forwarded-For` |
 | `LLM_PROVIDER` / `OPENAI_API_KEY` | `openai` / — | LLM backend |
 | `LOG_LEVEL` | `INFO` | Root and uvicorn log level |

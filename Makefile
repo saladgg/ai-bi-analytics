@@ -21,6 +21,8 @@ help:
 	@echo "  make hooks-install  Install pre-commit + pre-push hooks (once per clone)"
 	@echo "  make hooks-run      Run every hook (both stages) on all files"
 	@echo "  make docker-build   Build Docker image"
+	@echo "  make docker-up      Run api + postgres + redis (image as built)"
+	@echo "  make docker-up-dev  Same, with the source mounted and auto-reload"
 	@echo "  make api-key CLIENT=<id>  Generate a client API key + API_KEYS entry"
 
 
@@ -121,7 +123,7 @@ run_prod:
 
 .PHONY: run_frontend
 run_frontend:
-	streamlit run frontend/streamlit_app.py
+	uv run --group frontend streamlit run frontend/streamlit_app.py
 
 # ----------------------------------------------------------
 # Docker
@@ -134,6 +136,11 @@ docker-build:
 .PHONY: docker-up
 docker-up:
 	docker compose up --build
+
+# Development: bind-mounts the source and reloads on change.
+.PHONY: docker-up-dev
+docker-up-dev:
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 .PHONY: docker-down
 docker-down:

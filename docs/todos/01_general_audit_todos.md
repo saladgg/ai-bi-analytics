@@ -242,25 +242,46 @@ Postgres 18, at 100% line and branch coverage.
   unauthenticated, rate-limit-exempt); dispose the engine and close Redis
   in `lifespan` teardown; Dockerfile `HEALTHCHECK`; compose
   `healthcheck` + `depends_on: condition: service_healthy`.
-- [ ] **OPS-4 — Container and compose hardening.** (Partly pulled into
-  Phase 1 by the Trivy work: an apt upgrade layer, no pip, uv
-  bind-mounted at build time only, no baked uv cache, a
-  `.venv/bin/uvicorn` CMD, and the compose `/app/.venv` volume.)
-  - [ ] Non-root `USER`, base pinned by digest, add `--proxy-headers`
-    and `--timeout-graceful-shutdown 20` to the CMD; decide worker count.
-    (A separate builder stage is no longer needed for size: uv and its
-    cache already stay out of the image.)
+- [x] **OPS-4 — Container and compose hardening.** (Partly pulled into
+  Phase 1 by the Trivy work: an apt upgrade layer, no pip, uv bind-mounted
+  at build time only, no baked uv cache, a `.venv/bin/uvicorn` CMD.)
+  *build(docker): non-root, digest-pinned, demo-free API image; hardened
+  compose*
+  - [x] Non-root `USER app` (uid/gid 10001; app code root-owned and
+    read-only to it). Python and uv images pinned by digest.
+    `--proxy-headers` and `--timeout-graceful-shutdown 20` on the CMD.
+    Workers: uvicorn's `WEB_CONCURRENCY` (default 1), preferring one per
+    container and scaling out. A separate builder stage isn't needed:
+    uv and its cache stay out of the image.
+  - [x] The project itself is installed in the image. *Found on the way:*
+    OPS-2 reads the version from package metadata, which
+    `--no-install-project` never installed, so **the container crashed on
+    startup**; unit tests passed because the dev venv installs the
+    project. Also fixed with a `0+unknown` fallback (folded into the OPS-2
+    commit), and CI's Docker job now starts the image and waits for it to
+    turn healthy as non-root.
+  - [x] streamlit, pandas, plotly, python-dotenv and requests moved to a
+    `frontend` dependency group (included in `dev`). Image size:
+    906 MB → 343 MB.
+  - [x] Compose:
+    - `version:` dropped, ports bound to `127.0.0.1`, Redis
+      `--requirepass` (healthcheck via `REDISCLI_AUTH`).
+    - The API gets in-network `DATABASE_URL`/`REDIS_URL` (read-only
+      role), so it no longer depends on `.env` having compose-specific
+      values.
+    - Start command matches the image's; `restart: unless-stopped`.
+    - *Deviation:* the source bind mount and `--reload` went into a
+      tracked `docker-compose.dev.yml` (`make docker-up-dev`; `:z` for
+      SELinux) rather than `compose.override.yaml`, which `.gitignore`
+      reserves for personal overrides.
+  - [x] Verified the full stack: every service healthy, `/ready` OK,
+    Redis refusing unauthenticated clients, Postgres showing the API only
+    as `ai_bi_readonly`, and the dev overlay reloading on a source change.
+    Trivy: 0 fixable CRITICAL/HIGH.
   - [ ] **uv 0.10.9 itself has CVEs** (bundled zip, quinn-proto,
     rustls-webpki crates; Trivy, 2026-11-26). It no longer ships in the
     image, but CI, the release job and developer machines still run it,
     and menu-yetu pins the same version. Bump both repos together.
-  - [ ] Move streamlit, pandas, plotly, python-dotenv and requests into a
-    `frontend` optional dependency group (or a separate
-    `frontend/pyproject.toml`); the API image installs without them.
-  - [ ] Compose: drop `version:`, bind ports to `127.0.0.1`, Redis
-    `--requirepass`, non-superuser app credentials (SEC-2), source bind
-    mount only in `compose.override.yaml`, one start command shared with
-    the Dockerfile.
 - [x] **PERF-3 — Cache resilience.** *fix(ops): make the cache fail open
   and give the rate limiter an explicit Redis-outage policy*
   - [x] Cache reads and writes fail open: logged, counted as

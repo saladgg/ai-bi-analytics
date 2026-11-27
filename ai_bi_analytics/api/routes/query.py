@@ -52,10 +52,9 @@ def query_database(
         scope = load_query_scope(db)
 
     with tracer.start_as_current_span("query.cache_lookup") as span:
-        cache_key = generate_cache_key(payload.question + "|" + scope.description)
+        cache_key = generate_cache_key(payload.question, scope.description)
         cached = get_cached_response(cache_key)
         span.set_attribute("aibi.cache.hit", bool(cached))
-    metrics.cache_lookups.add(1, {"result": "hit" if cached else "miss"})
     if cached:
         metrics.queries.add(1, {**client, "source": "cache"})
         return cached

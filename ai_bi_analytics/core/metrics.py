@@ -29,7 +29,7 @@ llm_tokens = _meter.create_counter(
 )
 cache_lookups = _meter.create_counter(
     "aibi.cache.lookups",
-    description="Response cache lookups, by result (hit or miss).",
+    description="Response cache lookups, by result (hit, miss or error).",
 )
 errors = _meter.create_counter(
     "aibi.errors",
@@ -38,6 +38,10 @@ errors = _meter.create_counter(
 rate_limit_denials = _meter.create_counter(
     "aibi.rate_limit.denials",
     description="Requests rejected by the rate limiter.",
+)
+rate_limit_fail_open = _meter.create_counter(
+    "aibi.rate_limit.fail_open",
+    description="Requests served unthrottled because Redis was unreachable.",
 )
 query_rows = _meter.create_histogram(
     "aibi.query.rows",

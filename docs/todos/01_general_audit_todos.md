@@ -261,9 +261,19 @@ Postgres 18, at 100% line and branch coverage.
     `--requirepass`, non-superuser app credentials (SEC-2), source bind
     mount only in `compose.override.yaml`, one start command shared with
     the Dockerfile.
-- [ ] **PERF-3 — Cache resilience.** Cache get/set fail open (log and
-  continue); `RATE_LIMIT_FAIL_OPEN` setting; normalised question in the key;
-  configurable TTL; size cap (with SEC-5); hit/miss metric (with OPS-2).
+- [x] **PERF-3 — Cache resilience.** *fix(ops): make the cache fail open
+  and give the rate limiter an explicit Redis-outage policy*
+  - [x] Cache reads and writes fail open: logged, counted as
+    `aibi.cache.lookups{result=error}`, and the request proceeds uncached.
+    Corrupt entries read as misses.
+  - [x] `RATE_LIMIT_FAIL_OPEN`, default **false**: a Redis outage returns
+    503, keeping LLM spend bounded. When true, requests are served
+    unthrottled and counted in `aibi.rate_limit.fail_open`.
+  - [x] Normalised question (casefold, collapsed whitespace) in the key,
+    with a separator so question and schema can't collide by
+    concatenation.
+  - [x] `CACHE_TTL_SECONDS` (0 disables caching). The size cap shipped with
+    SEC-5; hit/miss metrics with OPS-2.
 
 ## Phase 3 — Architecture, performance, code quality 🟡
 

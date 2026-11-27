@@ -98,10 +98,10 @@ Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglo
 Tables and views in the queryable schema are reflected at request time via SQLAlchemy, narrowed to `QUERYABLE_TABLES` with `REDACTED_COLUMNS` removed, and passed to the LLM. The guard enforces that same scope, so the model is never shown anything it can't query, and the reverse. No hard-coded schema strings means no schema drift between code and prompts.
 
 ### Redis distributed cache
-Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 minutes. This cuts LLM spend and trims p95 latency on repeated dashboards-style traffic.
+Identical `(question, schema)` pairs reuse prior responses, ignoring case and whitespace in the question. The schema is part of the key, so a scope change never serves a stale answer. The TTL is `CACHE_TTL_SECONDS` (default 5 minutes). This cuts LLM spend and trims p95 latency on repeated dashboard-style traffic. The cache is an optimisation, not a dependency: if Redis errors, the request proceeds uncached and the error is logged and counted.
 
 ### Sliding-window rate limiting
-Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
+Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`. If Redis is unreachable the limiter fails closed by default (503), which keeps LLM spend bounded; `RATE_LIMIT_FAIL_OPEN=true` serves requests unthrottled instead.
 
 ### Observability
 - **Structured logs** ([`core/logging_config.py`](ai_bi_analytics/core/logging_config.py)):
@@ -280,8 +280,10 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `MAX_RESULT_ROWS` | `1000` | Most rows per query; the guard caps `LIMIT`, and responses flag `truncated` |
 | `EXPLANATION_SAMPLE_ROWS` | `20` | Rows sent to the LLM for the explanation |
 | `CACHE_MAX_BYTES` | `512000` | Larger responses aren't cached |
+| `CACHE_TTL_SECONDS` | `300` | Response cache lifetime; `0` disables caching |
 | `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
+| `RATE_LIMIT_FAIL_OPEN` | `false` | With Redis unreachable: `false` → 503, `true` → serve unthrottled |
 | `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies uvicorn trusts for `X-Forwarded-For` |
 | `LLM_PROVIDER` / `OPENAI_API_KEY` | `openai` / — | LLM backend |

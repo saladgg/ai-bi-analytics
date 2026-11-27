@@ -7,6 +7,7 @@ counts *above* the limit), counted same-second requests once, and keyed
 on a client-supplied ``X-Forwarded-For`` header.
 """
 
+import logging
 import math
 import uuid
 from dataclasses import dataclass
@@ -14,12 +15,15 @@ from functools import lru_cache
 from importlib.resources import files
 
 from fastapi import HTTPException, Request, status
+from redis.exceptions import RedisError
 
 from ai_bi_analytics.core import metrics
 from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.redis_client import redis_client
 
 KEY_PREFIX = "rate_limit:"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -99,11 +103,26 @@ def enforce_rate_limit(
     Raises:
         HTTPException: 429 with ``Retry-After`` when the window is full.
     """
-    result = check_rate_limit(
-        identity or client_identifier(request),
-        settings.rate_limit_requests,
-        settings.rate_limit_window_seconds,
-    )
+    try:
+        result = check_rate_limit(
+            identity or client_identifier(request),
+            settings.rate_limit_requests,
+            settings.rate_limit_window_seconds,
+        )
+    except RedisError:
+        # Audit PERF-3: an explicit policy rather than an accident. Fail
+        # closed (default) re-raises, which the RedisError handler turns
+        # into a 503; fail open serves the request unthrottled.
+        if not settings.rate_limit_fail_open:
+            raise
+        logger.warning("Rate limiter unavailable; failing open", exc_info=True)
+        metrics.rate_limit_fail_open.add(1)
+        return RateLimitResult(
+            allowed=True,
+            limit=settings.rate_limit_requests,
+            remaining=settings.rate_limit_requests,
+            retry_after_seconds=1,
+        )
     if not result.allowed:
         metrics.rate_limit_denials.add(1)
         raise HTTPException(

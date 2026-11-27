@@ -13,8 +13,8 @@ def test_cache_key_stable():
     q = "show products"
     schema = "products(id, name)"
 
-    key1 = generate_cache_key(q + schema)
-    key2 = generate_cache_key(q + schema)
+    key1 = generate_cache_key(q, schema)
+    key2 = generate_cache_key(q, schema)
 
     assert key1 == key2
 

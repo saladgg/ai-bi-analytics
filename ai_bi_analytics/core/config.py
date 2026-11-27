@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = Field(
         default=60, gt=0, alias="RATE_LIMIT_WINDOW_SECONDS"
     )
+    # When Redis is unreachable: false (default) rejects requests with 503,
+    # keeping LLM spend bounded; true serves them unthrottled.
+    rate_limit_fail_open: bool = Field(default=False, alias="RATE_LIMIT_FAIL_OPEN")
 
     queryable_schema: str = Field(default="public", alias="QUERYABLE_SCHEMA")
     queryable_tables: Annotated[list[str], NoDecode] = Field(
@@ -89,6 +92,7 @@ class Settings(BaseSettings):
         default=20, ge=1, le=500, alias="EXPLANATION_SAMPLE_ROWS"
     )
     cache_max_bytes: int = Field(default=512_000, ge=0, alias="CACHE_MAX_BYTES")
+    cache_ttl_seconds: int = Field(default=300, ge=0, alias="CACHE_TTL_SECONDS")
 
     max_question_length: int = Field(
         default=500, ge=10, le=4000, alias="MAX_QUESTION_LENGTH"

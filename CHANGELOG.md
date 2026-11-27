@@ -1,6 +1,113 @@
 # CHANGELOG
 
 
+## v1.2.0 (2026-11-27)
+
+### Features
+
+- **ops**: Health checks, OTLP observability, cache resilience and a hardened container
+  ([#11](https://github.com/saladgg/ai-bi-analytics/pull/11),
+  [`e98c6c8`](https://github.com/saladgg/ai-bi-analytics/commit/e98c6c8ca9b6df05d06511c36398277951774e81))
+
+* docs(audit): mark ARCH-4 done and split CQ-2 into done and open parts
+
+ARCH-4 shipped with SEC-3 in Phase 0 but was still unticked. CQ-2 was partly done in Phase 1
+  (security.py holds the key store, black/isort dropped, the stray noqa removed); the remaining
+  sub-items are listed.
+
+* feat(ops): liveness and readiness endpoints, connect timeouts, clean shutdown
+
+OPS-3: /api/health always returned ok, even with Postgres or Redis down, and nothing bounded a
+  connection attempt, so a blackholed dependency hung requests on the OS TCP timeout.
+
+- /api/health/live (process up; /api/health kept as an alias) and /api/health/ready (SELECT 1 +
+  PING; 503 naming the failed check, details only in the log). Both unauthenticated and outside the
+  rate limiter. - Postgres connect_timeout 5 s; Redis socket and connect timeouts 2 s and a periodic
+  health check (build_redis_client) - lifespan disposes the DB pool and closes Redis on shutdown -
+  Docker HEALTHCHECK on /live using the image's Python (slim has no curl) - compose: pg_isready and
+  redis-cli healthchecks; the API waits for service_healthy
+
+Verified in the built image: Docker reports healthy, /ready returns 503 naming redis promptly when
+  Redis is absent, and docker stop runs the cleanup.
+
+* feat(ops): structured logs, OTLP traces and metrics across the query pipeline
+
+OPS-2: observability was advertised but not wired. No tracer provider or exporter existed, trace ids
+  in logs were always N/A, extra={...} fields were silently dropped by the text formatter, LOG_LEVEL
+  was ignored, and there were no metrics.
+
+Logs - LOG_LEVEL applies to root and uvicorn; LOG_FORMAT is json outside development and text in it
+  (small in-repo JsonFormatter: one object per line with extras as keys) - ContextLogFilter adds
+  trace_id/span_id from the active span next to request_id - questions are logged as a sha256 prefix
+  + length unless LOG_QUESTIONS
+
+Traces and metrics (OTEL_ENABLED; standard OTEL_EXPORTER_OTLP_* config, http/protobuf or grpc) -
+  tracer and meter providers with service.name/version/environment - FastAPI (health excluded),
+  SQLAlchemy and Redis instrumentation - a span per pipeline stage, and a manual LLM span with GenAI
+  attributes and token usage (openai 3.x's httpx2 has no instrumentor) - aibi.queries,
+  cache.lookups, errors{code}, rate_limit.denials, llm.duration, llm.tokens, query.rows,
+  query.truncated - the FastAPI and OTel version comes from package metadata (was 0.1.0)
+
+opentelemetry-instrumentation-sqlalchemy 0.66b2 (latest) declares sqlalchemy < 2.1 and silently
+  skipped our 2.1.9. It is instrumented with skip_dep_check (its cursor-execute hooks are unchanged
+  in 2.1) plus greenlet, which its setup imports. A test asserts SQL spans exist.
+
+Verified against a real OpenTelemetry Collector: request, stage, LLM, Redis and SQL spans and the
+  aibi.* metrics arrived, and a JSON log line's trace_id matched the exported trace.
+
+* fix(ops): make the cache fail open and give the rate limiter an explicit Redis-outage policy
+
+PERF-3: Redis was a hard dependency. Any error in the cache or the limiter failed the whole request,
+  even though the cache is only an optimisation. Cache keys were also exact-text, so 'Top 3
+  products' and 'top 3 products' never shared an entry.
+
+- cache reads and writes fail open (logged, counted as aibi.cache.lookups{result=error}); corrupt
+  entries read as misses. The hit/miss/error metric moved into the cache module, which is the only
+  place that can tell them apart. - RATE_LIMIT_FAIL_OPEN, default false: a limiter outage returns
+  503 so LLM spend stays bounded; true serves unthrottled and counts aibi.rate_limit.fail_open -
+  keys use the case- and whitespace-normalised question plus a separator before the schema text -
+  CACHE_TTL_SECONDS (default 300; 0 disables caching)
+
+Tests cover each Redis failure mode, both limiter policies, and a full query succeeding with the
+  cache down.
+
+* fix(api): keep rate-limit headers on error responses
+
+The error handlers (SEC-4) build a fresh JSONResponse, which dropped the X-RateLimit-Limit/Remaining
+  headers the route had already set. Clients saw them only on success. Found while exercising the
+  full compose stack: a 502 from an unreachable LLM had no rate-limit headers.
+
+The route keeps its rate-limit headers on request.state, and the AppError, DBAPIError and RedisError
+  handlers copy them onto the error response.
+
+* build(docker): non-root, digest-pinned, demo-free API image; hardened compose
+
+OPS-4 (remainder): - the image runs as USER app (uid/gid 10001); app code is root-owned and
+  read-only to it - python:3.14-slim and the build-time uv image are pinned by digest - CMD adds
+  --proxy-headers and --timeout-graceful-shutdown 20; worker count via uvicorn's WEB_CONCURRENCY
+  (default 1, scale by containers) - HEALTHCHECK --start-interval=2s, so a fresh container turns
+  healthy in seconds rather than after the first 30 s interval - the project itself is installed
+  (non-editable). OPS-2 reads the version from package metadata, and --no-install-project never
+  installed it, so the container crashed at startup while unit tests passed. CI's Docker job now
+  starts the image and requires it to turn healthy as uid 10001. - streamlit, pandas, plotly,
+  python-dotenv and requests moved to a 'frontend' dependency group (included in dev): 906 MB -> 343
+  MB
+
+Compose: - dropped the obsolete version key; ports bound to 127.0.0.1 - Redis requires a password
+  (REDIS_PASSWORD; healthcheck via REDISCLI_AUTH) - the API gets in-network DATABASE_URL (read-only
+  role) and REDIS_URL, and its start command matches the image's - restart: unless-stopped - source
+  bind mount + --reload moved to docker-compose.dev.yml (make docker-up-dev)
+
+Verified with the full stack: every service healthy, /ready ok, Redis refusing unauthenticated
+  clients, Postgres showing the API only as ai_bi_readonly, the dev overlay reloading on change;
+  Trivy clean.
+
+* docs: record Phase 2 and update the roadmap
+
+The backlog status stamp, the docs/todos index and the README roadmap now reflect Phase 2 (OPS-2,
+  OPS-3, OPS-4, PERF-3), the two bugs the full-stack run surfaced, and Phase 3 as next.
+
+
 ## v1.1.0 (2026-11-26)
 
 ### Features

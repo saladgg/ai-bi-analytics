@@ -434,8 +434,9 @@ Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings pa
 
 - **Phase 0:** SQL guard, read-only database, rate limiting, build and packaging.
 - **Phase 1:** typed errors, bounded results, prompt separation, allowlisted query scope, per-client API keys, and full CI gates.
+- **Phase 2:** liveness and readiness checks, OTLP traces and metrics with JSON logs, a fail-open cache, and a hardened non-root container.
 
-Next up is Phase 2: OpenTelemetry export and metrics, readiness checks, the rest of the container hardening, and cache resilience.
+Next up is Phase 3: central configuration, a query-pipeline service, a task-level LLM interface, schema caching, and the Streamlit fixes.
 
 ---
 

@@ -5,19 +5,24 @@ IDs match that file; evidence, file:line references and rationale live
 there. Ship order is phase order. Items within a phase are independent
 unless a dependency is noted.
 
-> **Status (2026-11-26):** **Phases 0 and 1 shipped.** Phase 0 (SQL guard,
-> read-only database, rate limiter, build and packaging) was released as
-> v1.0.1 through the CI-gated pipeline. Phase 1 (typed errors, bounded
-> results, prompt separation, query scope, per-client API keys, and CI
-> that lints the whole repo, audits dependencies, scans the image and
-> secrets, and runs the Postgres integration suite) is on
-> `fix/phase1-request-path-and-ci`; its `feat(auth)` commit makes the next
-> release a minor one. pip-audit and Trivy are clean.
+> **Status (2026-11-27):** **Phases 0, 1 and 2 shipped.** Phase 0 was
+> released as v1.0.1 and Phase 1 as v1.1.0, both through the CI-gated
+> pipeline. Phase 2 (operability) is on `feat/phase2-operability`:
+> - OPS-3: liveness/readiness, connect timeouts, clean shutdown;
+> - OPS-2: JSON logs carrying trace ids, OTLP traces across every
+>   pipeline stage plus SQL/Redis/LLM, and `aibi.*` metrics;
+> - PERF-3: a fail-open cache and an explicit limiter outage policy;
+> - OPS-4: a non-root, digest-pinned 343 MB image and a hardened compose.
 >
-> **Open decisions:** the broken v1.0.0 release assets (PKG-1), enabling
-> Coveralls, and bumping uv in both repos (OPS-4). **Next:** Phase 2
-> (OPS-2 observability, OPS-3 health and lifecycle, the rest of OPS-4,
-> PERF-3).
+> Its `feat` commits make the next release minor (1.2.0). Running the
+> full compose stack surfaced two bugs the unit suite couldn't: the image
+> crashed on startup (missing package metadata) and error responses
+> dropped rate-limit headers. Both are fixed, and CI now boots the image.
+>
+> **Open decisions:** the broken v1.0.0 release assets (PKG-1) and
+> bumping uv in both repos (OPS-4). Coveralls is now reporting.
+> **Next:** Phase 3 (architecture, performance, code quality), starting
+> with ARCH-2 (central config).
 
 ---
 
@@ -200,7 +205,7 @@ Postgres 18, at 100% line and branch coverage.
     prompt-content tests (`test_prompts.py`); `schema_loader` output
     tests (`test_query_scope.py`).
 
-## Phase 2 — Operability 🟠
+## Phase 2 — Operability 🟠 ✅ (uv bump open, shared with menu-yetu)
 
 - [x] **OPS-2 — Wire observability for real.** *feat(ops): structured
   logs, OTLP traces and metrics across the query pipeline*

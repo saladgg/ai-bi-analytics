@@ -15,6 +15,7 @@ from importlib.resources import files
 
 from fastapi import HTTPException, Request, status
 
+from ai_bi_analytics.core import metrics
 from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.redis_client import redis_client
 
@@ -104,6 +105,7 @@ def enforce_rate_limit(
         settings.rate_limit_window_seconds,
     )
     if not result.allowed:
+        metrics.rate_limit_denials.add(1)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Rate limit exceeded",

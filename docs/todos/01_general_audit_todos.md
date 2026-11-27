@@ -202,22 +202,41 @@ Postgres 18, at 100% line and branch coverage.
 
 ## Phase 2 — Operability 🟠
 
-- [ ] **OPS-2 — Wire observability for real.**
-  - [ ] JSON logging (`structlog` or `python-json-logger`) honouring
-    `settings.log_level`; delete the `DEBUG`/`OTEL_ENABLED` `os.getenv`s
-    and the dead `"app"` logger.
-  - [ ] A request-id middleware (accept the inbound `X-Request-ID` or
-    generate one), bound into the log context and echoed in responses.
-  - [ ] OTel SDK bootstrap in `lifespan` behind `OTEL_ENABLED`: OTLP
-    exporter, service resource attributes, and FastAPI + SQLAlchemy +
-    Redis + HTTPX + logging instrumentors.
-  - [ ] Manual spans per pipeline stage, with LLM token usage as span
-    attributes.
-  - [ ] Metrics: LLM latency/tokens/cost, cache hit ratio, validator
-    rejections by reason, rate-limit denials, rows returned, truncations.
-  - [ ] Decide the logging policy for raw questions and SQL (INFO vs
-    DEBUG, redaction).
-  - [ ] Correct the README's observability section to match what ships.
+- [x] **OPS-2 — Wire observability for real.** *feat(ops): structured
+  logs, OTLP traces and metrics across the query pipeline*
+  - [x] JSON logging honouring `LOG_LEVEL`; `LOG_FORMAT` (JSON outside
+    dev, text in dev). *Deviation:* a ~30-line in-repo `JsonFormatter`
+    instead of `structlog`/`python-json-logger`, so no new dependency.
+    The `DEBUG`/`OTEL_ENABLED` `os.getenv`s and the dead `"app"` logger
+    are gone.
+  - [x] Request-id middleware (shipped with SEC-4 in Phase 1).
+    `ContextLogFilter` now adds `trace_id`/`span_id` from the active span,
+    so no logging instrumentor is needed.
+  - [x] OTel bootstrap in `lifespan` behind `OTEL_ENABLED`: OTLP over
+    http/protobuf or grpc (standard `OTEL_*` variables), service resource
+    attributes, FastAPI (health excluded), SQLAlchemy and Redis
+    instrumentation. *HTTPX not applicable:* openai 3.x uses `httpx2`,
+    which has no instrumentor, so the LLM call gets a manual span.
+  - [x] Manual spans per pipeline stage; the LLM span uses GenAI semconv
+    attributes, including input/output token usage.
+  - [x] Metrics: `aibi.queries`, `aibi.cache.lookups`, `aibi.errors` (by
+    code, which covers validator rejections), `aibi.rate_limit.denials`,
+    `aibi.llm.duration`, `aibi.llm.tokens`, `aibi.query.rows`,
+    `aibi.query.truncated`. *Not done:* LLM cost, which needs a price
+    table per model; that belongs with FEAT-9 spend controls.
+  - [x] Logging policy: SQL logged at INFO (generated, scope-bound);
+    questions logged as sha256 prefix + length unless `LOG_QUESTIONS`.
+  - [x] README observability section rewritten.
+  - [x] *Found on the way:* `opentelemetry-instrumentation-sqlalchemy`
+    0.66b2 (latest) declares `sqlalchemy < 2.1`, and Phase 1's relock
+    moved to 2.1.9, so it silently instrumented nothing. Now forced with
+    `skip_dep_check=True` (the cursor-execute hooks it uses are unchanged
+    in 2.1), plus `greenlet`, which its setup imports and SQLAlchemy 2.1 no
+    longer installs. A test asserts SQL spans appear. **Remove the
+    override once upstream declares 2.1 support.**
+  - [x] Verified against a real OpenTelemetry Collector (OTLP/HTTP): the
+    request span, stage, LLM, Redis and SQL spans and the `aibi.*` metrics
+    arrived, and a JSON log line's `trace_id` matched 27 exported spans.
 - [ ] **OPS-3 — Health and lifecycle.** `/api/health/live` +
   `/api/health/ready` (DB `SELECT 1` + Redis `PING`, short timeouts,
   unauthenticated, rate-limit-exempt); dispose the engine and close Redis
@@ -277,8 +296,8 @@ Postgres 18, at 100% line and branch coverage.
   - [x] `black`/`isort` dropped (Phase 1).
   - [x] The misplaced `noqa` went with SEC-4's route rewrite.
   - [ ] Move `Product` to `tests/fixtures`.
-  - [ ] App version from `importlib.metadata` (FastAPI still reports
-    `0.1.0`).
+  - [x] App version from `importlib.metadata` (`telemetry.SERVICE_VERSION`,
+    used by FastAPI and the OTel resource; OPS-2).
   - [ ] Re-enable mypy `union-attr`/`arg-type` and fix what surfaces.
 - [ ] **CQ-3 — Streamlit fixes.** `auto_chart` picks the first categorical
   and first numeric column (fixes the `IndexError` on 2–3 column results);

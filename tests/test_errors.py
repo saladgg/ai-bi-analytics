@@ -16,7 +16,7 @@ from ai_bi_analytics.core.errors import (
     QueryTimeoutError,
     UnsafeSQLError,
 )
-from ai_bi_analytics.core.request_context import RequestIdLogFilter, get_request_id
+from ai_bi_analytics.core.request_context import ContextLogFilter, get_request_id
 from ai_bi_analytics.db.errors import translate_db_error
 from ai_bi_analytics.main import create_app
 from fastapi.responses import StreamingResponse
@@ -85,8 +85,9 @@ def test_unsafe_incoming_request_id_is_replaced(raw_client, bad):
 def test_log_records_carry_request_id():
     record = logging.LogRecord("t", logging.INFO, __file__, 1, "msg", None, None)
 
-    assert RequestIdLogFilter().filter(record) is True
+    assert ContextLogFilter().filter(record) is True
     assert record.request_id == get_request_id() == "-"
+    assert record.trace_id == record.span_id == "-"
 
 
 # ---------------------------------------------------------------------------

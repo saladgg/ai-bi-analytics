@@ -16,12 +16,18 @@ from redis.exceptions import RedisError
 from sqlalchemy.exc import DBAPIError
 
 from ai_bi_analytics.api.routes import health, query
+from ai_bi_analytics.core import metrics
 from ai_bi_analytics.core import redis_client as redis_module
 from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.errors import AppError, DependencyUnavailableError
 from ai_bi_analytics.core.logging_config import setup_logging
 from ai_bi_analytics.core.request_context import RequestIdMiddleware, error_body
 from ai_bi_analytics.core.startup_checks import run_startup_checks
+from ai_bi_analytics.core.telemetry import (
+    SERVICE_VERSION,
+    flush_telemetry,
+    setup_telemetry,
+)
 from ai_bi_analytics.db.errors import translate_db_error
 from ai_bi_analytics.db.session import assert_database_role_is_safe, engine
 
@@ -33,7 +39,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logging.info("Starting %s in %s", settings.app_name, settings.env)
     run_startup_checks(settings)
     assert_database_role_is_safe(engine, settings.env)
+    setup_telemetry(settings, engine)
     yield
+    flush_telemetry()
     # Graceful shutdown (audit OPS-3): close pooled connections so Postgres
     # and Redis see clean disconnects rather than dropped sockets.
     logging.info("Shutting down %s", settings.app_name)
@@ -58,11 +66,12 @@ def create_app() -> FastAPI:
             "natural-language querying over PostgreSQL with "
             "AI-powered SQL generation and explainable results."
         ),
-        version="0.1.0",
+        version=SERVICE_VERSION,
         lifespan=lifespan,
     )
 
-    FastAPIInstrumentor.instrument_app(app)
+    # Health probes run every few seconds; tracing them is noise.
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="api/health")
     register_exception_handlers(app)
     # Outermost: also turns unhandled exceptions into a JSON 500 with the
     # request id, instead of leaking or returning plain text.
@@ -75,6 +84,7 @@ def create_app() -> FastAPI:
 
 
 def _app_error_response(exc: AppError) -> JSONResponse:
+    metrics.errors.add(1, {"code": exc.code})
     return JSONResponse(
         status_code=exc.status_code,
         content=error_body(exc.code, exc.public_message),

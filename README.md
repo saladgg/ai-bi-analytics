@@ -104,10 +104,22 @@ Identical `(question, schema)` pairs reuse prior responses. Default TTL is 5 min
 Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`.
 
 ### Observability
-- **Logging** — request lifecycle, SQL and errors via the standard `logging` config in [`core/logging_config.py`](ai_bi_analytics/core/logging_config.py).
-- **OpenTelemetry** — FastAPI auto-instrumentation is enabled.
+- **Structured logs** ([`core/logging_config.py`](ai_bi_analytics/core/logging_config.py)):
+  - JSON (one object per line) outside development, readable text in development.
+  - Every line carries `request_id`, `trace_id` and `span_id`, plus structured fields such as `sql`, `row_count` and `client_id`.
+  - Questions are logged as a hash and length unless `LOG_QUESTIONS=true`, since they can contain sensitive text.
+- **Traces** (`OTEL_ENABLED=true`, exported over OTLP), in a single trace per request:
+  - the FastAPI request span, with health probes excluded;
+  - a span per pipeline stage (`query.scope`, `query.cache_lookup`, `query.generate_sql`, `query.validate`, `query.execute`, `query.explain`);
+  - SQLAlchemy and Redis spans nested under those stages;
+  - an LLM span with GenAI attributes and token usage.
+- **Metrics** (also OTLP):
+  - `aibi.queries` (by source and client), `aibi.cache.lookups` (hit/miss), `aibi.errors` (by code), `aibi.rate_limit.denials`;
+  - `aibi.llm.duration` and `aibi.llm.tokens`;
+  - `aibi.query.rows` and `aibi.query.truncated`;
+  - HTTP and DB-pool metrics from the auto-instrumentation.
 
-Not wired yet (tracked as OPS-2 in [`docs/todos`](docs/todos/01_general_audit_todos.md)): an OTLP exporter, DB/Redis/LLM spans, trace ids in log lines, JSON logs, and metrics.
+Point `OTEL_EXPORTER_OTLP_ENDPOINT` at an OpenTelemetry Collector (or any OTLP backend: Grafana Alloy, Tempo/Mimir, Honeycomb, …). With `OTEL_ENABLED=false` the instrumentation does nothing.
 
 ### API-key auth
 Each client sends its own key in the `x-api-key` header. The server stores only SHA-256 hashes (`API_KEYS=client_id:hash,...`), compares in constant time against every entry, and identifies the caller for rate limiting and logs. To rotate a key, list the new entry next to the old one, then remove the old. Missing or unknown keys get `401`. Generate a key with `make api-key CLIENT=<id>`. See [`core/security.py`](ai_bi_analytics/core/security.py). Suitable for internal and service-to-service use; swap in OAuth/JWT for end-user auth.
@@ -126,7 +138,7 @@ A minimal Streamlit UI ships under [`frontend/`](frontend/) for exploring the AP
 | SQL guard              | sqlglot (AST parse + canonical regeneration)         |
 | Cache & rate limiting  | Redis 8 (Lua-scripted sliding window)                |
 | LLM provider           | OpenAI (abstracted behind `services/llm_client.py`)  |
-| Observability          | OpenTelemetry (FastAPI instrumentation)              |
+| Observability          | OpenTelemetry (OTLP traces + metrics), JSON logs     |
 | Frontend (demo)        | Streamlit + pandas + Plotly                          |
 | Containerization       | Docker + docker-compose                              |
 | Python tooling         | uv, ruff, mypy, pytest, fakeredis                    |
@@ -273,6 +285,10 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies uvicorn trusts for `X-Forwarded-For` |
 | `LLM_PROVIDER` / `OPENAI_API_KEY` | `openai` / — | LLM backend |
+| `LOG_LEVEL` | `INFO` | Root and uvicorn log level |
+| `LOG_FORMAT` | `json` outside dev, `text` in dev | Log line format |
+| `LOG_QUESTIONS` | `false` | Log question text instead of a hash + length |
+| `OTEL_ENABLED` | `false` | Export traces and metrics over OTLP. Configure with the standard `OTEL_EXPORTER_OTLP_*` and `OTEL_SERVICE_NAME` variables |
 
 ---
 

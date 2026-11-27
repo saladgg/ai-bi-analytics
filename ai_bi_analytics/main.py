@@ -15,7 +15,8 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from redis.exceptions import RedisError
 from sqlalchemy.exc import DBAPIError
 
-from ai_bi_analytics.api.routes import query
+from ai_bi_analytics.api.routes import health, query
+from ai_bi_analytics.core import redis_client as redis_module
 from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.errors import AppError, DependencyUnavailableError
 from ai_bi_analytics.core.logging_config import setup_logging
@@ -33,6 +34,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     run_startup_checks(settings)
     assert_database_role_is_safe(engine, settings.env)
     yield
+    # Graceful shutdown (audit OPS-3): close pooled connections so Postgres
+    # and Redis see clean disconnects rather than dropped sockets.
+    logging.info("Shutting down %s", settings.app_name)
+    engine.dispose()
+    redis_module.redis_client.close()
 
 
 def create_app() -> FastAPI:
@@ -62,18 +68,8 @@ def create_app() -> FastAPI:
     # request id, instead of leaking or returning plain text.
     app.add_middleware(RequestIdMiddleware)
 
-    # main endpoint
     app.include_router(query.router, prefix="/api")
-
-    @app.get("/api/health", tags=["health"])
-    def health_check() -> dict[str, str]:
-        """
-        Health check endpoint used for monitoring and orchestration.
-
-        Returns:
-            dict: Application health status.
-        """
-        return {"status": "ok"}
+    app.include_router(health.router, prefix="/api")
 
     return app
 

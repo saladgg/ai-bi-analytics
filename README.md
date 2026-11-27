@@ -278,13 +278,20 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 
 ## API usage
 
-`/api/query` requires an `x-api-key` header holding a client key (see [API-key auth](#api-key-auth)); `/api/health` is open.
+`/api/query` requires an `x-api-key` header holding a client key (see [API-key auth](#api-key-auth)); the `/api/health` endpoints are open.
 
 ### Health
 
 ```
-GET /api/health  →  {"status": "ok"}
+GET /api/health/live   →  200 {"status": "ok"}
+GET /api/health/ready  →  200 {"status": "ok", "checks": {"database": "ok", "redis": "ok"}}
+                          503 {"status": "unavailable", "checks": {"database": "ok", "redis": "error"}}
 ```
+
+- `live`: the process is serving. The Docker `HEALTHCHECK` uses it. `/api/health` is an alias.
+- `ready`: Postgres and Redis both answer. Point load balancers and readiness probes here.
+
+Postgres and Redis connections have short connect timeouts, so an unreachable dependency fails fast with a 503 instead of hanging requests. Shutdown closes both pools cleanly.
 
 ### Query
 

@@ -159,6 +159,7 @@ def fake_redis(monkeypatch):
     """
     client = fakeredis.FakeRedis(decode_responses=True)
 
+    monkeypatch.setattr("ai_bi_analytics.core.redis_client.redis_client", client)
     monkeypatch.setattr("ai_bi_analytics.core.rate_limiter.redis_client", client)
     monkeypatch.setattr("ai_bi_analytics.services.cache.redis_client", client)
 

@@ -16,9 +16,13 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    # Start only once Postgres and Redis accept connections, not merely
+    # once their containers exist (audit OPS-3).
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: always
 
   postgres:
@@ -39,6 +43,11 @@ services:
       - ./example/initdb/10_readonly_role.sh:/docker-entrypoint-initdb.d/10_readonly_role.sh:ro
       # .sql.in so the entrypoint doesn't auto-run it without psql variables.
       - ./example/readonly_role.sql:/docker-entrypoint-initdb.d/readonly_role.sql.in:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "test_user", "-d", "ai_bi_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: always
 
   redis:
@@ -48,6 +57,11 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: always
 
 volumes:

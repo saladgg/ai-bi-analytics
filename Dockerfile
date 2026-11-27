@@ -34,6 +34,12 @@ COPY . .
 
 EXPOSE 8000
 
+# Liveness only (audit OPS-3): Docker marks the container unhealthy when
+# the process stops serving. Dependency readiness is /api/health/ready,
+# for load balancers. Uses the image's Python; slim has no curl.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=4)"]
+
 # Run the venv's uvicorn directly: `uv run` would re-sync (and could
 # download) at container start. uvicorn puts the working directory on
 # sys.path, so the package is importable from /app.

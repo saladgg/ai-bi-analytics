@@ -161,9 +161,13 @@ class Settings(BaseSettings):
 
     # SKIP_DOTENV=1 ignores a local .env, so the pre-push test hook sees the
     # same configuration as CI (which has no .env) instead of a developer's.
+    # extra="ignore": .env is shared with docker compose (REDIS_PASSWORD),
+    # uvicorn (FORWARDED_ALLOW_IPS) and OpenTelemetry (OTEL_EXPORTER_*), so
+    # variables the app doesn't read must not stop it from starting.
     model_config = SettingsConfigDict(
         env_file=None if os.getenv("SKIP_DOTENV") else ".env",
         case_sensitive=False,
+        extra="ignore",
     )
 
     @field_validator("queryable_tables", "redacted_columns", "api_keys", mode="before")

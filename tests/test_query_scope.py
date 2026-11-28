@@ -229,6 +229,31 @@ def test_env_is_case_insensitive(value):
     assert make_settings(ENV=value).env == value.strip().lower()
 
 
+def test_env_example_loads(tmp_path, monkeypatch):
+    """`cp .env.example .env` must give a config that starts: the file also
+    carries compose/uvicorn/OTel variables the app doesn't read."""
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / ".env.example"
+    for name in ("API_KEY", "API_KEYS", "DATABASE_URL", "ENV", "REDIS_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+    cfg = Settings(_env_file=example)
+
+    assert cfg.queryable_tables == ["products"]
+    assert cfg.redis_url.host == "localhost"
+
+
+def test_unknown_dotenv_entries_are_ignored(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "API_KEY=k\nDATABASE_URL=sqlite://\nREDIS_PASSWORD=x\n"
+        "FORWARDED_ALLOW_IPS=10.0.0.1\nOTEL_SERVICE_NAME=bi\n"
+    )
+
+    assert Settings(_env_file=env_file).api_key is not None
+
+
 def test_unknown_env_rejected():
     with pytest.raises(ValidationError, match="ENV"):
         make_settings(ENV="prod")

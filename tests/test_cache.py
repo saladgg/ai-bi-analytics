@@ -2,11 +2,13 @@
 Unit tests for caching layer.
 """
 
-from ai_bi_analytics.services.cache import (
-    generate_cache_key,
-    get_cached_response,
-    set_cached_response,
-)
+import pytest
+from ai_bi_analytics.services.cache import ResultCache, generate_cache_key
+
+
+@pytest.fixture()
+def cache(fake_redis, settings):
+    return ResultCache(fake_redis, settings)
 
 
 def test_cache_key_stable():
@@ -26,13 +28,24 @@ def test_cache_key_differs():
     assert k1 != k2
 
 
-def test_get_cached_response_none_when_key_missing():
-    assert get_cached_response("query_cache:missing") is None
+def test_key_covers_scope_model_and_row_cap(cache, settings, monkeypatch):
+    base = cache.key("q", "fp1")
+
+    assert cache.key("q", "fp2") != base
+    monkeypatch.setattr(settings, "llm_sql_model", "another-model")
+    assert cache.key("q", "fp1") != base
+    monkeypatch.undo()
+    monkeypatch.setattr(settings, "max_result_rows", settings.max_result_rows + 1)
+    assert cache.key("q", "fp1") != base
 
 
-def test_cached_response_round_trip():
+def test_get_cached_response_none_when_key_missing(cache):
+    assert cache.get("query_cache:missing") is None
+
+
+def test_cached_response_round_trip(cache):
     key = generate_cache_key("q")
     value = {"sql": "SELECT 1", "result": [], "explanation": "test"}
 
-    set_cached_response(key, value)
-    assert get_cached_response(key) == value
+    cache.set(key, value)
+    assert cache.get(key) == value

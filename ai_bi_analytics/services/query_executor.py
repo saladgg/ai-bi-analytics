@@ -61,3 +61,13 @@ def execute_query(db: Session, sql: str, max_rows: int | None = None) -> QueryRe
         return _fetch(db, sql, max_rows)
     finally:
         db.rollback()
+
+
+class QueryExecutor:
+    """``execute_query`` with the configured row cap."""
+
+    def __init__(self, max_rows: int | None) -> None:
+        self.max_rows = max_rows
+
+    def run(self, db: Session, sql: str) -> QueryResult:
+        return execute_query(db, sql, max_rows=self.max_rows)

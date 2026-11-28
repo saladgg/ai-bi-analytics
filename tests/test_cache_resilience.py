@@ -3,13 +3,10 @@ Cache and rate-limiter behaviour when Redis misbehaves (audit PERF-3).
 """
 
 import pytest
-from ai_bi_analytics.core.config import settings
-from ai_bi_analytics.services import cache
 from ai_bi_analytics.services.cache import (
+    ResultCache,
     generate_cache_key,
-    get_cached_response,
     normalise_question,
-    set_cached_response,
 )
 from redis.exceptions import ConnectionError as RedisConnectionError
 
@@ -52,48 +49,60 @@ def test_normalise_question():
 # ---------------------------------------------------------------------------
 
 
-def test_read_error_is_a_miss(fake_redis, monkeypatch, caplog):
+@pytest.fixture()
+def cache(fake_redis, settings):
+    return ResultCache(fake_redis, settings)
+
+
+def test_read_error_is_a_miss(cache, fake_redis, monkeypatch, caplog):
     monkeypatch.setattr(fake_redis, "get", redis_down)
 
-    assert get_cached_response("query_cache:x") is None
+    assert cache.get("query_cache:x") is None
     assert "Cache read failed" in caplog.text
 
 
-def test_write_error_is_not_fatal(fake_redis, monkeypatch, caplog):
+def test_write_error_is_not_fatal(cache, fake_redis, monkeypatch, caplog):
     monkeypatch.setattr(fake_redis, "setex", redis_down)
 
-    assert set_cached_response("query_cache:x", {"a": 1}) is False
+    assert cache.set("query_cache:x", {"a": 1}) is False
     assert "Cache write failed" in caplog.text
 
 
-def test_corrupt_entry_is_a_miss(fake_redis, caplog):
+def test_corrupt_entry_is_a_miss(cache, fake_redis, caplog):
     fake_redis.set("query_cache:bad", "{not json")
 
-    assert get_cached_response("query_cache:bad") is None
+    assert cache.get("query_cache:bad") is None
     assert "corrupt cache entry" in caplog.text
 
 
-def test_ttl_is_configurable(fake_redis, monkeypatch):
+def test_non_object_entry_is_a_miss(cache, fake_redis, caplog):
+    fake_redis.set("query_cache:list", "[1, 2]")
+
+    assert cache.get("query_cache:list") is None
+    assert "corrupt cache entry" in caplog.text
+
+
+def test_ttl_is_configurable(cache, settings, fake_redis, monkeypatch):
     monkeypatch.setattr(settings, "cache_ttl_seconds", 42)
 
-    assert set_cached_response("query_cache:t", {"a": 1}) is True
+    assert cache.set("query_cache:t", {"a": 1}) is True
     # TTL rounds down, so a just-set key can already read 41.
     assert 40 <= fake_redis.ttl("query_cache:t") <= 42
 
 
-def test_zero_ttl_disables_caching(fake_redis, monkeypatch):
+def test_zero_ttl_disables_caching(cache, settings, fake_redis, monkeypatch):
     monkeypatch.setattr(settings, "cache_ttl_seconds", 0)
 
-    assert set_cached_response("query_cache:t", {"a": 1}) is False
+    assert cache.set("query_cache:t", {"a": 1}) is False
     assert fake_redis.get("query_cache:t") is None
 
 
 def test_query_succeeds_with_cache_down(
-    client, sample_products, mock_llm, fake_redis, monkeypatch
+    client, sample_products, fake_redis, monkeypatch
 ):
     # Only the cache is down here: limiter commands still work.
-    monkeypatch.setattr(cache.redis_client, "get", redis_down)
-    monkeypatch.setattr(cache.redis_client, "setex", redis_down)
+    monkeypatch.setattr(fake_redis, "get", redis_down)
+    monkeypatch.setattr(fake_redis, "setex", redis_down)
 
     response = client.post("/api/query", json={"question": "show products"})
 
@@ -118,7 +127,7 @@ def test_limiter_fails_closed_by_default(client, fake_redis, monkeypatch):
 
 
 def test_limiter_can_fail_open(
-    client, sample_products, mock_llm, fake_redis, monkeypatch, caplog
+    client, sample_products, settings, fake_redis, monkeypatch, caplog
 ):
     monkeypatch.setattr(settings, "rate_limit_fail_open", True)
     monkeypatch.setattr(fake_redis, "evalsha", redis_down)

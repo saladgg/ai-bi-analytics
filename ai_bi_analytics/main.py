@@ -9,6 +9,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from anyio import to_thread
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -17,8 +18,7 @@ from sqlalchemy.exc import DBAPIError
 
 from ai_bi_analytics.api.routes import health, query
 from ai_bi_analytics.core import metrics
-from ai_bi_analytics.core import redis_client as redis_module
-from ai_bi_analytics.core.config import settings
+from ai_bi_analytics.core.config import Settings, get_settings
 from ai_bi_analytics.core.errors import AppError, DependencyUnavailableError
 from ai_bi_analytics.core.logging_config import setup_logging
 from ai_bi_analytics.core.request_context import RequestIdMiddleware, error_body
@@ -29,35 +29,52 @@ from ai_bi_analytics.core.telemetry import (
     setup_telemetry,
 )
 from ai_bi_analytics.db.errors import translate_db_error
-from ai_bi_analytics.db.session import assert_database_role_is_safe, engine
+from ai_bi_analytics.db.session import assert_database_role_is_safe
+from ai_bi_analytics.resources import ResourcesFactory, build_resources
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    logging.info("Starting %s in %s", settings.app_name, settings.env)
-    run_startup_checks(settings)
-    assert_database_role_is_safe(engine, settings.env)
-    setup_telemetry(settings, engine)
-    yield
-    flush_telemetry()
-    # Graceful shutdown (audit OPS-3): close pooled connections so Postgres
-    # and Redis see clean disconnects rather than dropped sockets.
-    logging.info("Shutting down %s", settings.app_name)
-    engine.dispose()
-    redis_module.redis_client.close()
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    cfg: Settings = app.state.settings
+    logger.info("Starting %s in %s", cfg.app_name, cfg.env)
+    run_startup_checks(cfg)
+    # Clients are built here, not at import (audit ARCH-2), and closed on
+    # shutdown even when a later startup step fails.
+    resources = app.state.resources_factory(cfg)
+    app.state.resources = resources
+    try:
+        assert_database_role_is_safe(resources.engine, cfg.env)
+        setup_telemetry(cfg, resources.engine)
+        # The query route is synchronous and runs in this threadpool; see
+        # docs/architecture.md for why, and how to size it.
+        to_thread.current_default_thread_limiter().total_tokens = cfg.worker_threads
+        yield
+        flush_telemetry()
+        logger.info("Shutting down %s", cfg.app_name)
+    finally:
+        resources.close()
 
 
-def create_app() -> FastAPI:
+def create_app(
+    cfg: Settings | None = None,
+    *,
+    resources_factory: ResourcesFactory = build_resources,
+) -> FastAPI:
     """
     Create and configure the FastAPI application.
+
+    Args:
+        cfg: Settings; defaults to ``get_settings()`` (the environment).
+        resources_factory: Builds the engine, Redis and LLM clients at
+            startup. Tests pass one that returns in-memory fakes.
 
     Returns:
         FastAPI: Configured FastAPI application instance.
     """
-
-    setup_logging()
+    cfg = cfg or get_settings()
+    setup_logging(cfg)
 
     app = FastAPI(
         title="AI-Powered Business Intelligence Backend",
@@ -69,6 +86,8 @@ def create_app() -> FastAPI:
         version=SERVICE_VERSION,
         lifespan=lifespan,
     )
+    app.state.settings = cfg
+    app.state.resources_factory = resources_factory
 
     # Health probes run every few seconds; tracing them is noise.
     FastAPIInstrumentor.instrument_app(app, excluded_urls="api/health")

@@ -13,9 +13,8 @@ from collections import defaultdict
 
 import openai
 import pytest
-from ai_bi_analytics.api.routes.query import question_log_fields
 from ai_bi_analytics.core import telemetry
-from ai_bi_analytics.core.config import Settings, settings
+from ai_bi_analytics.core.config import Settings
 from ai_bi_analytics.core.logging_config import JsonFormatter, build_logging_config
 from ai_bi_analytics.core.request_context import ContextLogFilter
 from ai_bi_analytics.core.telemetry import (
@@ -25,6 +24,7 @@ from ai_bi_analytics.core.telemetry import (
     otlp_exporters,
     setup_telemetry,
 )
+from ai_bi_analytics.services.pipeline import question_log_fields
 from opentelemetry import trace
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -33,6 +33,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from pydantic import ValidationError
 
 from tests.conftest import engine as test_engine
+from tests.fakes import fake_openai_provider
 
 SPANS = InMemorySpanExporter()
 READER = InMemoryMetricReader()
@@ -72,10 +73,11 @@ def metric_points() -> dict[str, list[tuple[dict, float]]]:
         for scope in resource_metrics.scope_metrics:
             for metric in scope.metrics:
                 for point in metric.data.data_points:
+                    # Counters have a value; histograms count observations.
                     value = getattr(point, "value", None)
-                    if value is None:  # histogram
-                        value = point.count
-                    points[metric.name].append((dict(point.attributes), value))
+                    if value is None:
+                        value = getattr(point, "count")  # noqa: B009
+                    points[metric.name].append((dict(point.attributes or {}), value))
     return points
 
 
@@ -203,7 +205,7 @@ STAGES = [
 ]
 
 
-def test_query_produces_request_and_stage_spans(client, sample_products, mock_llm):
+def test_query_produces_request_and_stage_spans(client, sample_products):
     assert (
         client.post("/api/query", json={"question": "show products"}).status_code == 200
     )
@@ -249,40 +251,22 @@ def test_log_lines_carry_the_active_trace():
 # ---------------------------------------------------------------------------
 
 
-def openai_client(monkeypatch, *, raises=None, usage="default", content="SELECT 1"):
-    from ai_bi_analytics.services import llm_client
-
-    if usage == "default":
-        usage = type("U", (), {"prompt_tokens": 120, "completion_tokens": 30})()
-
-    class Completions:
-        def create(self, **_kwargs):
-            if raises:
-                raise raises
-            message = type("M", (), {"content": content})()
-            choice = type("C", (), {"message": message})()
-            return type("R", (), {"choices": [choice], "usage": usage})()
-
-    class FakeOpenAI:
-        def __init__(self, api_key):
-            self.chat = type("Chat", (), {"completions": Completions()})()
-
-    monkeypatch.setattr(llm_client, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    return llm_client.OpenAILLMClient()
+def complete(provider, model="gpt-4o-mini"):
+    return provider.complete(system="s", prompt="q", model=model, max_tokens=10)
 
 
-def test_llm_call_span_and_token_metrics(monkeypatch):
-    client = openai_client(monkeypatch)
+def test_llm_call_span_and_token_metrics(monkeypatch, settings):
+    provider = fake_openai_provider(monkeypatch, settings)
     before_in = metric_total("aibi.llm.tokens", type="input")
     before_out = metric_total("aibi.llm.tokens", type="output")
     before_ok = metric_total("aibi.llm.duration", outcome="ok")
 
-    assert client.complete("q") == "SELECT 1"
+    assert complete(provider).text == "SELECT 1"
 
     span = next(s for s in finished_spans() if s.name == "chat gpt-4o-mini")
     assert span.attributes["gen_ai.system"] == "openai"
     assert span.attributes["gen_ai.request.model"] == "gpt-4o-mini"
+    assert span.attributes["gen_ai.request.max_tokens"] == 10
     assert span.attributes["gen_ai.usage.input_tokens"] == 120
     assert span.attributes["gen_ai.usage.output_tokens"] == 30
     assert metric_total("aibi.llm.tokens", type="input") - before_in == 120
@@ -290,15 +274,15 @@ def test_llm_call_span_and_token_metrics(monkeypatch):
     assert metric_total("aibi.llm.duration", outcome="ok") - before_ok == 1
 
 
-def test_llm_failure_records_error_outcome(monkeypatch):
+def test_llm_failure_records_error_outcome(monkeypatch, settings):
     request = sys.modules["httpx2"].Request("POST", "https://api.openai.com")
-    client = openai_client(
-        monkeypatch, raises=openai.APIConnectionError(request=request)
+    provider = fake_openai_provider(
+        monkeypatch, settings, raises=openai.APIConnectionError(request=request)
     )
     before = metric_total("aibi.llm.duration", outcome="error")
 
     with pytest.raises(Exception, match="unavailable"):
-        client.complete("q")
+        complete(provider)
 
     assert metric_total("aibi.llm.duration", outcome="error") - before == 1
 
@@ -306,10 +290,10 @@ def test_llm_failure_records_error_outcome(monkeypatch):
 @pytest.mark.parametrize(
     "usage", [None, type("U", (), {"prompt_tokens": None, "completion_tokens": "x"})()]
 )
-def test_missing_or_odd_usage_is_ignored(monkeypatch, usage):
-    client = openai_client(monkeypatch, usage=usage)
+def test_missing_or_odd_usage_is_ignored(monkeypatch, settings, usage):
+    provider = fake_openai_provider(monkeypatch, settings, usage=usage)
 
-    assert client.complete("q") == "SELECT 1"
+    assert complete(provider).text == "SELECT 1"
     span = next(s for s in finished_spans() if s.name == "chat gpt-4o-mini")
     assert "gen_ai.usage.input_tokens" not in span.attributes
 
@@ -319,7 +303,7 @@ def test_missing_or_odd_usage_is_ignored(monkeypatch, usage):
 # ---------------------------------------------------------------------------
 
 
-def test_query_metrics_llm_then_cache(client, sample_products, mock_llm):
+def test_query_metrics_llm_then_cache(client, sample_products):
     llm = metric_total("aibi.queries", source="llm", client_id="test-client")
     cache = metric_total("aibi.queries", source="cache", client_id="test-client")
     miss = metric_total("aibi.cache.lookups", result="miss")
@@ -341,7 +325,7 @@ def test_query_metrics_llm_then_cache(client, sample_products, mock_llm):
     assert metric_total("aibi.query.rows") - rows == 1
 
 
-def test_truncation_metric(client, sample_products, mock_llm, monkeypatch):
+def test_truncation_metric(client, sample_products, settings, monkeypatch):
     monkeypatch.setattr(settings, "max_result_rows", 1)
     before = metric_total("aibi.query.truncated")
 
@@ -350,14 +334,8 @@ def test_truncation_metric(client, sample_products, mock_llm, monkeypatch):
     assert metric_total("aibi.query.truncated") - before == 1
 
 
-def test_error_metric_by_code(client, monkeypatch):
-    from ai_bi_analytics.services import nl_to_sql
-
-    class DropLLM:
-        def complete(self, prompt, system=None):
-            return "DROP TABLE products"
-
-    monkeypatch.setattr(nl_to_sql, "get_llm_client", lambda: DropLLM())
+def test_error_metric_by_code(client, fake_llm):
+    fake_llm.sql = "DROP TABLE products"
     before = metric_total("aibi.errors", code="unsafe_sql")
 
     assert client.post("/api/query", json={"question": "drop it"}).status_code == 422
@@ -365,11 +343,10 @@ def test_error_metric_by_code(client, monkeypatch):
     assert metric_total("aibi.errors", code="unsafe_sql") - before == 1
 
 
-def test_internal_error_metric():
-    from ai_bi_analytics.main import create_app
+def test_internal_error_metric(raw_app):
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = raw_app
 
     def boom():
         raise RuntimeError("x")
@@ -382,7 +359,7 @@ def test_internal_error_metric():
     assert metric_total("aibi.errors", code="internal_error") - before == 1
 
 
-def test_rate_limit_denial_metric(client, sample_products, mock_llm):
+def test_rate_limit_denial_metric(client, sample_products, settings):
     before = metric_total("aibi.rate_limit.denials")
 
     for _ in range(settings.rate_limit_requests + 1):
@@ -452,20 +429,16 @@ def test_log_level_applied_and_validated():
         make_settings(LOG_LEVEL="loud")
 
 
-def test_questions_not_logged_by_default(monkeypatch):
-    monkeypatch.setattr(settings, "log_questions", False)
-
-    fields = question_log_fields("revenue for customer Jane Doe")
+def test_questions_not_logged_by_default():
+    fields = question_log_fields("revenue for customer Jane Doe", False)
 
     assert fields["question_length"] == 29
     assert len(fields["question_sha256"]) == 16
     assert "question" not in fields
 
 
-def test_questions_logged_when_enabled(monkeypatch):
-    monkeypatch.setattr(settings, "log_questions", True)
-
-    assert question_log_fields("q?") == {"question": "q?"}
+def test_questions_logged_when_enabled():
+    assert question_log_fields("q?", True) == {"question": "q?"}
 
 
 def test_version_falls_back_without_package_metadata(monkeypatch, caplog):

@@ -61,6 +61,23 @@ def check_api_keys(cfg: Settings) -> None:
     logger.warning("%s Allowed only because ENV=%s.", message, cfg.env)
 
 
+def check_llm_configured(cfg: Settings) -> None:
+    """
+    Without a provider key every query fails. Development starts anyway
+    (health checks and local work don't need one); elsewhere that is a
+    misconfiguration worth refusing to boot over.
+    """
+    if cfg.llm_provider != "openai":
+        return
+    if cfg.openai_api_key is not None and cfg.openai_api_key.get_secret_value():
+        return
+    message = "OPENAI_API_KEY is not set: every query will fail."
+    if cfg.env != DEVELOPMENT_ENV:
+        raise UnsafeConfigurationError(message)
+    logger.warning("%s Allowed only because ENV=%s.", message, cfg.env)
+
+
 def run_startup_checks(cfg: Settings) -> None:
     check_query_scope(cfg)
     check_api_keys(cfg)
+    check_llm_configured(cfg)

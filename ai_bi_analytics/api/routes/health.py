@@ -16,12 +16,13 @@ details go to the log; the body only names which check failed.
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Response, status
+import redis
+from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import Engine, text
 
-from ai_bi_analytics.core import redis_client as redis_module
-from ai_bi_analytics.db import session as db_session
+from ai_bi_analytics.api.deps import get_resources
+from ai_bi_analytics.resources import Resources
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,9 @@ class ReadyResponse(BaseModel):
     checks: dict[str, CheckStatus]
 
 
-def _check_database() -> CheckStatus:
+def _check_database(engine: Engine) -> CheckStatus:
     try:
-        with db_session.engine.connect() as conn:
+        with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return "ok"
     except Exception:
@@ -49,9 +50,9 @@ def _check_database() -> CheckStatus:
         return "error"
 
 
-def _check_redis() -> CheckStatus:
+def _check_redis(client: redis.Redis) -> CheckStatus:
     try:
-        redis_module.redis_client.ping()
+        client.ping()
         return "ok"
     except Exception:
         logger.exception("Readiness: redis check failed")
@@ -70,10 +71,12 @@ def live() -> LiveResponse:
     summary="Readiness",
     responses={503: {"model": ReadyResponse}},
 )
-def ready(response: Response) -> ReadyResponse:
+def ready(
+    response: Response, resources: Resources = Depends(get_resources)
+) -> ReadyResponse:
     checks: dict[str, CheckStatus] = {
-        "database": _check_database(),
-        "redis": _check_redis(),
+        "database": _check_database(resources.engine),
+        "redis": _check_redis(resources.redis),
     }
     if all(result == "ok" for result in checks.values()):
         return ReadyResponse(status="ok", checks=checks)

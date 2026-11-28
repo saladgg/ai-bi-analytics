@@ -40,8 +40,9 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from ai_bi_analytics.core.errors import UnsafeSQLError
+from ai_bi_analytics.services.schema_loader import QueryScope
 
-__all__ = ["UnsafeSQLError", "strip_code_fences", "validate_sql"]
+__all__ = ["SQLGuard", "UnsafeSQLError", "strip_code_fences", "validate_sql"]
 
 DIALECT = "postgres"
 
@@ -318,3 +319,20 @@ def validate_sql(
         tree = _apply_row_cap(tree, max_rows)
 
     return tree.sql(dialect=DIALECT, comments=False)
+
+
+class SQLGuard:
+    """``validate_sql`` bound to a query scope's rules and the row cap."""
+
+    def __init__(self, max_rows: int | None) -> None:
+        self.max_rows = max_rows
+
+    def check(self, sql: str, scope: QueryScope) -> str:
+        """Returns the canonical SQL to execute; raises ``UnsafeSQLError``."""
+        return validate_sql(
+            sql,
+            allowed_tables=scope.tables,
+            schema=scope.schema,
+            redacted_columns=scope.redacted,
+            max_rows=self.max_rows,
+        )

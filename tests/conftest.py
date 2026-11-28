@@ -1,25 +1,29 @@
 """
 Global pytest configuration and reusable fixtures.
 
-This file provides:
-- Test client (FastAPI)
-- Test database session
-- Dependency overrides
-- Common utilities for all tests
-
-Automatically discovered by pytest.
+The app is built with ``create_app(settings, resources_factory=...)`` so
+every external client is an in-memory fake: a SQLite engine, fakeredis
+(running the real Lua) and a fake LLM provider. Tests change behaviour by
+configuring those fakes, by ``app.dependency_overrides``, or by setting
+attributes on the ``settings`` fixture; never by patching import paths
+(audit ARCH-1).
 """
 
 import fakeredis
 import pytest
-from ai_bi_analytics.api.deps import verify_api_key
+from ai_bi_analytics.api.deps import get_db, verify_api_key
+from ai_bi_analytics.core.config import Settings, get_settings
 from ai_bi_analytics.core.security import Principal
-from ai_bi_analytics.db.models import Base
-from ai_bi_analytics.db.session import get_db
 from ai_bi_analytics.main import create_app
+from ai_bi_analytics.resources import Resources
+from ai_bi_analytics.services.llm_client import LLMClient
+from ai_bi_analytics.services.schema_loader import SchemaProvider
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from tests.fakes import FakeProvider
+from tests.fixtures.models import Base, Product
 
 # -----------------------------
 # Test Database Setup
@@ -52,9 +56,7 @@ def setup_test_db():
 @pytest.fixture()
 def db_session():
     """
-    Creates a new database session per test.
-
-    Rolls back after each test to ensure isolation.
+    A session inside a transaction that is rolled back after the test.
     """
     connection = engine.connect()
     transaction = connection.begin()
@@ -68,30 +70,87 @@ def db_session():
     connection.close()
 
 
+@pytest.fixture()
+def settings() -> Settings:
+    """
+    The process settings (what ``create_app()`` uses by default).
+    Monkeypatch attributes on it to change behaviour for one test.
+    """
+    return get_settings()
+
+
 # -----------------------------
-# FastAPI Test Client
+# Fakes for external clients
 # -----------------------------
 
 
 @pytest.fixture()
-def client(db_session):
+def fake_redis():
     """
-    Provides a test client with DB + auth override.
-    """
+    In-memory Redis that executes Lua for real (``fakeredis[lua]``).
 
-    app = create_app()
+    The rate limiter and the response cache both run their real code
+    against it. The previous hand-written fakes didn't match the Lua
+    script's semantics and hid a limiter that never blocked (audit SEC-3).
+    """
+    return fakeredis.FakeRedis(decode_responses=True)
+
+
+@pytest.fixture()
+def fake_llm() -> FakeProvider:
+    """The LLM provider behind the app; configure its answers per test."""
+    return FakeProvider()
+
+
+@pytest.fixture()
+def resources(settings, fake_redis, fake_llm):
+    """
+    What the app's lifespan would build. The engine is the app's own (same
+    database file as ``db_session``), because shutdown disposes it.
+    """
+    app_engine = create_engine(
+        SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    )
+    yield Resources(
+        engine=app_engine,
+        session_factory=sessionmaker(bind=app_engine),
+        redis=fake_redis,
+        llm=LLMClient(fake_llm, settings),
+        schema=SchemaProvider(settings),
+    )
+    app_engine.dispose()
+
+
+# -----------------------------
+# FastAPI app and client
+# -----------------------------
+
+
+@pytest.fixture()
+def app(settings, resources, db_session):
+    """
+    The app with fake clients, the test session and auth bypassed.
+    """
+    application = create_app(settings, resources_factory=lambda _cfg: resources)
 
     def override_get_db():
         yield db_session
 
-    def override_verify_api_key():
-        return Principal("test-client")  # bypass auth
+    application.dependency_overrides[get_db] = override_get_db
+    application.dependency_overrides[verify_api_key] = lambda: Principal("test-client")
+    return application
 
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[verify_api_key] = override_verify_api_key
 
+@pytest.fixture()
+def client(app):
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def raw_app(settings, resources):
+    """The app with fake clients but real auth and sessions."""
+    return create_app(settings, resources_factory=lambda _cfg: resources)
 
 
 # -----------------------------
@@ -104,8 +163,6 @@ def sample_products(db_session):
     """
     Inserts sample products into test DB.
     """
-    from ai_bi_analytics.db.models import Product
-
     products = [
         Product(name="Laptop", category="Electronics", revenue=1200),
         Product(name="Phone", category="Electronics", revenue=800),
@@ -116,51 +173,3 @@ def sample_products(db_session):
     db_session.commit()
 
     return products
-
-
-# -----------------------------
-# Mock LLM
-# -----------------------------
-
-
-@pytest.fixture()
-def mock_llm(monkeypatch):
-    """
-    Mock LLM response to avoid real API calls.
-    """
-
-    def fake_complete(self, prompt: str, system=None):
-        return "SELECT * FROM products;"
-
-    mock_llm_instance = type("MockLLM", (), {"complete": fake_complete})()
-
-    monkeypatch.setattr(
-        "ai_bi_analytics.services.nl_to_sql.get_llm_client",
-        lambda: mock_llm_instance,
-    )
-
-    monkeypatch.setattr(
-        "ai_bi_analytics.services.explanation.get_llm_client",
-        lambda: mock_llm_instance,
-    )
-
-
-# -----------------------------
-# Redis (rate limiter + cache)
-# -----------------------------
-@pytest.fixture(autouse=True)
-def fake_redis(monkeypatch):
-    """
-    In-memory Redis that executes Lua for real (``fakeredis[lua]``).
-
-    The rate limiter and the response cache both run their real code
-    against it. The previous hand-written fakes didn't match the Lua
-    script's semantics and hid a limiter that never blocked (audit SEC-3).
-    """
-    client = fakeredis.FakeRedis(decode_responses=True)
-
-    monkeypatch.setattr("ai_bi_analytics.core.redis_client.redis_client", client)
-    monkeypatch.setattr("ai_bi_analytics.core.rate_limiter.redis_client", client)
-    monkeypatch.setattr("ai_bi_analytics.services.cache.redis_client", client)
-
-    return client

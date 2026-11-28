@@ -1,14 +1,11 @@
 """
-Explanation service.
-
-Generates business-readable explanations for query results
-using LLM while grounding output in actual SQL + returned data.
+Result explanation: the prompt that asks the LLM for a business-readable
+explanation grounded in the executed SQL and the returned rows.
+``services/llm_client.py`` sends it.
 """
 
 import json
 
-from ai_bi_analytics.core.config import settings
-from ai_bi_analytics.services.llm_client import get_llm_client
 from ai_bi_analytics.services.prompting import untrusted_block
 from ai_bi_analytics.services.query_executor import QueryResult
 
@@ -37,26 +34,15 @@ def describe_row_count(result: QueryResult, shown: int) -> str:
     return f"Rows returned: {count}."
 
 
-def explain_result(question: str, sql: str, result: QueryResult) -> str:
+def build_explanation_prompt(
+    question: str, sql: str, result: QueryResult, sample_rows: int
+) -> str:
     """
-    Generates an explanation of the query result.
-
     Only a bounded sample (EXPLANATION_SAMPLE_ROWS) is sent to the LLM, so
     a large result can't blow up the prompt's size or cost (audit SEC-5).
-
-    Args:
-        question (str): Original user question.
-        sql (str): Executed SQL query.
-        result (QueryResult): Query results.
-
-    Returns:
-        str: Business-readable explanation.
     """
-
-    llm = get_llm_client()
-
-    sample = result.rows[: settings.explanation_sample_rows]
-    prompt = "\n\n".join(
+    sample = result.rows[:sample_rows]
+    return "\n\n".join(
         [
             untrusted_block("question", question),
             untrusted_block("sql", sql),
@@ -64,5 +50,3 @@ def explain_result(question: str, sql: str, result: QueryResult) -> str:
             untrusted_block("result", json.dumps(sample, default=str)),
         ]
     )
-
-    return llm.complete(prompt, system=EXPLANATION_RULES)

@@ -15,7 +15,7 @@ import logging
 from logging.config import dictConfig
 from typing import Any
 
-from ai_bi_analytics.core.config import Settings, settings
+from ai_bi_analytics.core.config import Settings
 
 TEXT_FORMAT = (
     "[%(asctime)s] %(levelname)s "
@@ -81,5 +81,5 @@ def build_logging_config(cfg: Settings) -> dict[str, Any]:
     }
 
 
-def setup_logging(cfg: Settings = settings) -> None:
+def setup_logging(cfg: Settings) -> None:
     dictConfig(build_logging_config(cfg))

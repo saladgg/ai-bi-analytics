@@ -6,7 +6,7 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
-from ai_bi_analytics.core.config import settings
+from ai_bi_analytics.core.config import get_settings
 
 MIN_QUESTION_LENGTH = 3
 
@@ -30,6 +30,13 @@ class QueryRequest(BaseModel):
         ),
         examples=["What are the top 3 products by revenue?"],
     )
+    explain: bool = Field(
+        default=True,
+        description=(
+            "Ask the LLM to explain the result. false skips that second LLM "
+            "call (faster, cheaper) and returns explanation: null."
+        ),
+    )
 
     @field_validator("question")
     @classmethod
@@ -39,10 +46,9 @@ class QueryRequest(BaseModel):
             raise ValueError(
                 f"question must be at least {MIN_QUESTION_LENGTH} characters"
             )
-        if len(value) > settings.max_question_length:
-            raise ValueError(
-                f"question must be at most {settings.max_question_length} characters"
-            )
+        max_length = get_settings().max_question_length
+        if len(value) > max_length:
+            raise ValueError(f"question must be at most {max_length} characters")
         return value
 
 
@@ -55,11 +61,15 @@ class QueryResponse(BaseModel):
         result (list[dict]): Query result rows, at most MAX_RESULT_ROWS.
         row_count (int): Number of rows in ``result``.
         truncated (bool): The query produced more rows than were returned.
-        explanation (str): AI-generated explanation.
+        explanation (str | None): AI-generated explanation; null when the
+            request set ``explain: false``.
+        assumptions (list[str]): How the model interpreted ambiguous parts
+            of the question; empty when nothing was ambiguous.
     """
 
     sql: str
     result: list[dict]
     row_count: int
     truncated: bool
-    explanation: str
+    explanation: str | None
+    assumptions: list[str] = Field(default_factory=list)

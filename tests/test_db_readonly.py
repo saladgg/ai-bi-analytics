@@ -6,7 +6,6 @@ tests/integration/test_postgres_readonly.py.
 """
 
 import pytest
-from ai_bi_analytics.db import session as session_mod
 from ai_bi_analytics.db.session import (
     UnsafeDatabaseRoleError,
     assert_database_role_is_safe,
@@ -119,7 +118,7 @@ def test_role_check_warns_when_unverifiable_in_dev(caplog):
     assert "Could not verify" in caplog.text
 
 
-def test_lifespan_runs_role_check(monkeypatch):
+def test_lifespan_runs_role_check(raw_app, resources, settings, monkeypatch):
     import ai_bi_analytics.main as main_mod
     from fastapi.testclient import TestClient
 
@@ -130,10 +129,10 @@ def test_lifespan_runs_role_check(monkeypatch):
         lambda engine, env: calls.append((engine, env)),
     )
 
-    with TestClient(main_mod.create_app()):
+    with TestClient(raw_app):
         pass
 
-    assert calls == [(session_mod.engine, main_mod.settings.env)]
+    assert calls == [(resources.engine, settings.env)]
 
 
 # ---------------------------------------------------------------------------
@@ -174,3 +173,41 @@ def test_postgres_query_rolls_back_on_error():
         execute_query(db, "SELECT 1")
 
     assert db.calls[-1] == "ROLLBACK"
+
+
+def test_postgres_pool_is_sized_from_settings():
+    kwargs = build_engine_kwargs(PG_URL, 1, 1, pool_size=3, max_overflow=4)
+
+    assert (kwargs["pool_size"], kwargs["max_overflow"]) == (3, 4)
+
+
+def test_build_resources_wires_every_client(monkeypatch):
+    from ai_bi_analytics.core.config import Settings
+    from ai_bi_analytics.resources import build_resources
+    from pydantic import SecretStr
+
+    cfg = Settings(
+        _env_file=None,
+        API_KEY="k",
+        DATABASE_URL=PG_URL,
+        REDIS_URL="redis://:pw@cache.internal:6380/2",
+        REDIS_SOCKET_TIMEOUT_SECONDS="1.5",
+        DB_POOL_SIZE="3",
+        OPENAI_API_KEY=SecretStr("sk-test").get_secret_value(),
+    )
+
+    resources = build_resources(cfg)
+    try:
+        assert resources.engine.url.host == "localhost"
+        assert resources.engine.pool.size() == 3  # type: ignore[attr-defined]
+        assert resources.session_factory.kw["bind"] is resources.engine
+        redis_kwargs = resources.redis.connection_pool.connection_kwargs
+        assert (redis_kwargs["host"], redis_kwargs["port"], redis_kwargs["db"]) == (
+            "cache.internal",
+            6380,
+            2,
+        )
+        assert redis_kwargs["socket_timeout"] == 1.5
+        assert resources.llm.provider.name == "openai"
+    finally:
+        resources.close()  # nothing connected, so this is instant

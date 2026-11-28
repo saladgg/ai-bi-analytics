@@ -72,10 +72,11 @@ frontend = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/saladgg/ai-bi-analytics" # todo
+Homepage = "https://github.com/saladgg/ai-bi-analytics"
 Repository = "https://github.com/saladgg/ai-bi-analytics"
-Documentation = "https://github.com/saladgg/ai-bi-analytics/docs" # todo
-Changelog = "https://github.com/saladgg/ai-bi-analytics/releases"
+Documentation = "https://github.com/saladgg/ai-bi-analytics/blob/main/docs/architecture.md"
+Changelog = "https://github.com/saladgg/ai-bi-analytics/blob/main/CHANGELOG.md"
+Issues = "https://github.com/saladgg/ai-bi-analytics/issues"
 
 
 [tool.setuptools.packages.find]
@@ -121,7 +122,7 @@ mypy_path = ["frontend"]
 explicit_package_bases = true
 disable_error_code = [
   "var-annotated", "import-untyped",
-  "annotation-unchecked", "union-attr", "arg-type"
+  "annotation-unchecked",
 ]
 
 

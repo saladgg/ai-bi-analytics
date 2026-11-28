@@ -18,18 +18,19 @@ from ai_bi_analytics.core.errors import (
 )
 from ai_bi_analytics.core.request_context import ContextLogFilter, get_request_id
 from ai_bi_analytics.db.errors import translate_db_error
-from ai_bi_analytics.main import create_app
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.exc import DBAPIError, OperationalError
 
+from tests.fakes import fake_openai_provider
+
 SECRET = "postgres-primary.internal:5432 password=hunter2"
 
 
 @pytest.fixture()
-def app():
-    return create_app()
+def app(raw_app):
+    return raw_app
 
 
 @pytest.fixture()
@@ -219,44 +220,27 @@ def test_translate_other_codeless_error_as_query_failure():
 # ---------------------------------------------------------------------------
 
 
-def make_openai_client(monkeypatch, *, raises=None, content="SELECT 1"):
-    from ai_bi_analytics.core.config import settings
-    from ai_bi_analytics.services import llm_client
-
-    class Completions:
-        def create(self, **_kwargs):
-            if raises:
-                raise raises
-            message = type("M", (), {"content": content})()
-            choice = type("C", (), {"message": message})()
-            return type("R", (), {"choices": [choice]})()
-
-    class FakeOpenAI:
-        def __init__(self, api_key):
-            self.chat = type("Chat", (), {"completions": Completions()})()
-
-    monkeypatch.setattr(llm_client, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    return llm_client.OpenAILLMClient()
+def complete(provider):
+    return provider.complete(system="s", prompt="p", model="m", max_tokens=10)
 
 
-def test_provider_error_becomes_llm_unavailable(monkeypatch):
+def test_provider_error_becomes_llm_unavailable(monkeypatch, settings):
     # openai 3.x's HTTP client (it replaced httpx, which is no longer installed).
     import httpx2
 
     request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
-    client = make_openai_client(
-        monkeypatch, raises=openai.APIConnectionError(request=request)
+    provider = fake_openai_provider(
+        monkeypatch, settings, raises=openai.APIConnectionError(request=request)
     )
 
     with pytest.raises(LLMUnavailableError) as exc:
-        client.complete("prompt")
+        complete(provider)
     assert isinstance(exc.value.__cause__, openai.APIConnectionError)
 
 
 @pytest.mark.parametrize("content", [None, ""])
-def test_empty_completion_becomes_llm_unavailable(monkeypatch, content):
-    client = make_openai_client(monkeypatch, content=content)
+def test_empty_completion_becomes_llm_unavailable(monkeypatch, settings, content):
+    provider = fake_openai_provider(monkeypatch, settings, content=content)
 
     with pytest.raises(LLMUnavailableError, match="no answer"):
-        client.complete("prompt")
+        complete(provider)

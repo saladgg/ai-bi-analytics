@@ -51,21 +51,20 @@ This project demonstrates how to ship that capability **safely**: an LLM-backed 
                │  POST /api/query  (x-api-key)
                ▼
         ┌──────────────┐    ┌──────────────────────────┐
-        │   FastAPI    │───▶│ Rate limiter (Redis Lua)│
+        │   FastAPI    │───▶│ Rate limiter (Redis Lua) │
         └──────┬───────┘    └──────────────────────────┘
-               │
                ▼
+        ┌──────────────────────┐
+        │     Query scope      │  introspected, cached in process
+        └──────────┬───────────┘
+                   ▼
         ┌──────────────┐    ┌──────────────────────────┐
-        │ Cache lookup │───▶│ Hit → return cached JSON│
+        │ Cache lookup │───▶│ Hit → return cached JSON │
         └──────┬───────┘    └──────────────────────────┘
                │ miss
                ▼
         ┌──────────────────────┐
-        │ Schema introspection │  (SQLAlchemy reflect)
-        └──────────┬───────────┘
-                   ▼
-        ┌──────────────────────┐
-        │   NL → SQL  (LLM)    │
+        │   NL → SQL  (LLM)    │  JSON: sql, tables, assumptions
         └──────────┬───────────┘
                    ▼
         ┌──────────────────────┐
@@ -77,15 +76,17 @@ This project demonstrates how to ship that capability **safely**: an LLM-backed 
         └──────────┬───────────┘
                    ▼
         ┌──────────────────────┐
-        │ Explanation  (LLM)   │
+        │ Explanation  (LLM)   │  optional (explain: false skips it)
         └──────────┬───────────┘
                    ▼
         ┌──────────────────────┐
         │ Cache write + return │
         └──────────────────────┘
 
-Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
+Cross-cutting:  structured logging  •  OpenTelemetry traces and metrics
 ```
+
+The pipeline lives in [`services/pipeline.py`](ai_bi_analytics/services/pipeline.py); the route only wires it up. [docs/architecture.md](docs/architecture.md) covers the wiring, the LLM layer, caching, and why the request path is synchronous.
 
 ---
 
@@ -95,10 +96,13 @@ Cross-cutting:  structured logging  •  OpenTelemetry tracing (FastAPI instr.)
 Generated SQL is parsed into an AST ([sqlglot](https://github.com/tobymao/sqlglot), Postgres dialect) and accepted only if it is exactly one read query (`SELECT`, `UNION`, `WITH … SELECT`) with no write, DDL, `COPY`, `SELECT INTO` or row lock anywhere in the tree, no dangerous functions (`pg_sleep`, `pg_read_file`, `lo_*`, `dblink`, `set_config`, …), and only tables in the configured query scope (`QUERYABLE_SCHEMA` / `QUERYABLE_TABLES`, never system catalogs) without touching `REDACTED_COLUMNS`. The API executes SQL **regenerated from the validated AST**, not the raw model output, so what was checked is exactly what runs. The database enforces this independently: the API connects as a read-only role (`SELECT` only, read-only transactions by default, server-side statement timeout), every query runs in an explicit `READ ONLY` transaction that is always rolled back, and outside `ENV=development` the service refuses to start on a privileged role. See [example/README.md](example/README.md#two-roles-on-purpose).
 
 ### Dynamic schema introspection
-Tables and views in the queryable schema are reflected at request time via SQLAlchemy, narrowed to `QUERYABLE_TABLES` with `REDACTED_COLUMNS` removed, and passed to the LLM. The guard enforces that same scope, so the model is never shown anything it can't query, and the reverse. No hard-coded schema strings means no schema drift between code and prompts.
+Tables and views in the queryable schema are reflected via SQLAlchemy, narrowed to `QUERYABLE_TABLES` with `REDACTED_COLUMNS` removed, and passed to the LLM. The guard enforces that same scope, so the model is never shown anything it can't query, and the reverse. No hard-coded schema strings means no schema drift between code and prompts. The scope is cached in each process for `SCHEMA_CACHE_TTL_SECONDS` (default 5 minutes), so most requests make no catalog queries.
+
+### Task-level LLM interface
+SQL generation asks the model for JSON against a strict schema: the query, the tables it used, and any assumptions it made about an ambiguous question. The assumptions are returned to the client. SQL generation and explanation each have their own model and output cap (`LLM_SQL_*`, `LLM_EXPLAIN_*`). One SDK client per process carries a timeout (`LLM_TIMEOUT_SECONDS`) and bounded retries (`LLM_MAX_RETRIES`), and token usage is logged per query. Providers register by name, so another backend is one class away ([docs/architecture.md](docs/architecture.md#llm-layer)).
 
 ### Redis distributed cache
-Identical `(question, schema)` pairs reuse prior responses, ignoring case and whitespace in the question. The schema is part of the key, so a scope change never serves a stale answer. The TTL is `CACHE_TTL_SECONDS` (default 5 minutes). This cuts LLM spend and trims p95 latency on repeated dashboard-style traffic. The cache is an optimisation, not a dependency: if Redis errors, the request proceeds uncached and the error is logged and counted.
+Identical questions reuse prior responses, ignoring case and whitespace. The key also covers a fingerprint of the query scope, the SQL model and the row cap, so a schema or configuration change never serves a stale answer. The TTL is `CACHE_TTL_SECONDS` (default 5 minutes). This cuts LLM spend and trims p95 latency on repeated dashboard-style traffic. The cache is an optimisation, not a dependency: if Redis errors, the request proceeds uncached and the error is logged and counted.
 
 ### Sliding-window rate limiting
 Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rate_limit.lua`](ai_bi_analytics/core/lua/sliding_window_rate_limit.lua)) so the check-and-record is atomic across replicas and uses the Redis server's clock. Default policy: 5 requests per minute per client (`RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`), keyed on the authenticated client id. `X-Forwarded-For` is honoured only from proxies listed in uvicorn's `FORWARDED_ALLOW_IPS`. Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`, and 429s carry `Retry-After`. If Redis is unreachable the limiter fails closed by default (503), which keeps LLM spend bounded; `RATE_LIMIT_FAIL_OPEN=true` serves requests unthrottled instead.
@@ -114,7 +118,7 @@ Implemented as a Redis Lua script ([`ai_bi_analytics/core/lua/sliding_window_rat
   - SQLAlchemy and Redis spans nested under those stages;
   - an LLM span with GenAI attributes and token usage.
 - **Metrics** (also OTLP):
-  - `aibi.queries` (by source and client), `aibi.cache.lookups` (hit/miss), `aibi.errors` (by code), `aibi.rate_limit.denials`;
+  - `aibi.queries` (by source and client), `aibi.cache.lookups` and `aibi.schema_cache.lookups` (hit/miss), `aibi.errors` (by code), `aibi.rate_limit.denials`;
   - `aibi.llm.duration` and `aibi.llm.tokens`;
   - `aibi.query.rows` and `aibi.query.truncated`;
   - HTTP and DB-pool metrics from the auto-instrumentation.
@@ -152,27 +156,35 @@ A minimal Streamlit UI ships under [`frontend/`](frontend/) for exploring the AP
 ai-bi-analytics/
 ├── ai_bi_analytics/              # Application package
 │   ├── api/
-│   │   ├── deps.py               # API-key auth dependency
-│   │   └── routes/query.py       # POST /api/query
+│   │   ├── deps.py               # Dependencies: settings, clients, auth, rate limit, pipeline
+│   │   └── routes/
+│   │       ├── query.py          # POST /api/query
+│   │       └── health.py         # /api/health/live, /api/health/ready
 │   ├── core/
-│   │   ├── config.py             # Pydantic settings
-│   │   ├── logging_config.py
+│   │   ├── config.py             # Settings: every tunable, one place
+│   │   ├── errors.py             # Typed, client-safe errors
+│   │   ├── logging_config.py     # JSON/text logs with request and trace ids
+│   │   ├── metrics.py            # OpenTelemetry instruments
 │   │   ├── rate_limiter.py       # Redis sliding-window limiter
 │   │   ├── redis_client.py
-│   │   ├── security.py
+│   │   ├── security.py           # API-key store
+│   │   ├── startup_checks.py     # Refuse unsafe production config
+│   │   ├── telemetry.py          # OTLP setup
 │   │   └── lua/sliding_window_rate_limit.lua
 │   ├── db/
-│   │   ├── models.py
+│   │   ├── errors.py             # SQLSTATE → typed errors
 │   │   └── session.py            # Engine (read-only + timeouts), role guard
 │   ├── schemas/query.py          # Request/response models
 │   ├── services/
-│   │   ├── cache.py              # Redis response cache
-│   │   ├── explanation.py        # LLM explanation step
-│   │   ├── llm_client.py         # Provider abstraction
-│   │   ├── nl_to_sql.py          # NL → SQL generation
+│   │   ├── pipeline.py           # QueryPipeline: the NL → SQL → result flow
+│   │   ├── llm_client.py         # Provider registry + task-level LLM client
+│   │   ├── nl_to_sql.py          # SQL prompt + structured-answer parsing
+│   │   ├── explanation.py        # Explanation prompt
+│   │   ├── schema_loader.py      # Query scope + its in-process cache
+│   │   ├── sql_validator.py      # AST SQL guard (sqlglot)
 │   │   ├── query_executor.py     # READ ONLY transaction, always rolled back
-│   │   ├── schema_loader.py      # Schema + table-name introspection
-│   │   └── sql_validator.py      # AST SQL guard (sqlglot)
+│   │   └── cache.py              # Redis response cache
+│   ├── resources.py              # Engine, Redis and LLM clients, built in lifespan
 │   └── main.py                   # FastAPI app factory
 │
 ├── frontend/                     # Streamlit demo UI
@@ -183,7 +195,9 @@ ai-bi-analytics/
 │   └── gen_test_table_data.py    # Seed sample data (owner role)
 ├── tests/                        # pytest suite
 │   └── integration/              # Real-Postgres checks (opt-in)
-├── docs/todos/                   # Audit findings + phased backlogs
+├── docs/
+│   ├── architecture.md           # Wiring, LLM layer, caching, concurrency
+│   └── todos/                    # Audit findings + phased backlogs
 │
 ├── Dockerfile
 ├── .dockerignore                 # Keeps .env, .venv, .git out of images
@@ -279,9 +293,11 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `API_KEYS` | empty | `client_id:sha256(key)` entries, one per client (generate with `make api-key CLIENT=<id>`) |
 | `API_KEY` | empty | Legacy single key, authenticates as client `default`. Outside development: 32+ chars, not a placeholder. One of `API_KEYS`/`API_KEY` is required |
 | `DATABASE_URL` | — (required) | SQLAlchemy URL; must use a read-only role |
-| `ENV` | `development` | Anything else enforces the database role check at startup |
+| `ENV` | `development` | `development`, `staging` or `production`. Anything but development enforces the startup checks (read-only role, allowlist, strong keys, LLM key) |
 | `DB_STATEMENT_TIMEOUT_MS` | `5000` | Server-side cap per query |
 | `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | `10000` | Server-side cap on idle open transactions |
+| `DB_CONNECT_TIMEOUT_SECONDS` | `5` | Postgres connection attempt timeout |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `5` / `10` | Connection pool per process |
 | `QUERYABLE_SCHEMA` | `public` | The one schema the LLM sees and queries (also the connection's `search_path`) |
 | `QUERYABLE_TABLES` | empty | Comma-separated tables/views the LLM may use. **Required outside `ENV=development`**; empty means every table in the schema |
 | `REDACTED_COLUMNS` | empty | `table.column` or bare `column` entries hidden from the LLM and rejected by the guard (including `SELECT *` on those tables) |
@@ -290,13 +306,19 @@ Settings load from the environment (or `.env`) via [`core/config.py`](ai_bi_anal
 | `EXPLANATION_SAMPLE_ROWS` | `20` | Rows sent to the LLM for the explanation |
 | `CACHE_MAX_BYTES` | `512000` | Larger responses aren't cached |
 | `CACHE_TTL_SECONDS` | `300` | Response cache lifetime; `0` disables caching |
+| `SCHEMA_CACHE_TTL_SECONDS` | `300` | How long the introspected query scope is reused per process; `0` reads it every request |
 | `RATE_LIMIT_REQUESTS` | `5` | Requests per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window length |
 | `RATE_LIMIT_FAIL_OPEN` | `false` | With Redis unreachable: `false` → 503, `true` → serve unthrottled |
-| `REDIS_URL` | `redis://redis:6379/0` | Cache and rate-limit store (include the password: `redis://:<pw>@host:6379/0`) |
+| `REDIS_URL` | `redis://localhost:6379/0` | Cache and rate-limit store (include the password: `redis://:<pw>@host:6379/0`) |
+| `REDIS_SOCKET_TIMEOUT_SECONDS` | `2` | Redis connect and read timeout |
 | `WEB_CONCURRENCY` | `1` | uvicorn worker processes. Prefer one per container and scale out |
+| `WORKER_THREADS` | `40` | Threads serving requests per process ([sizing](docs/architecture.md#decision-a-synchronous-pipeline-on-a-sized-threadpool-perf-2)) |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies uvicorn trusts for `X-Forwarded-For` |
-| `LLM_PROVIDER` / `OPENAI_API_KEY` | `openai` / — | LLM backend |
+| `LLM_PROVIDER` / `OPENAI_API_KEY` | `openai` / — | LLM backend. Without a key the API starts only in development |
+| `LLM_SQL_MODEL` / `LLM_SQL_MAX_TOKENS` | `gpt-4o-mini` / `1000` | Model and output cap for SQL generation |
+| `LLM_EXPLAIN_MODEL` / `LLM_EXPLAIN_MAX_TOKENS` | `gpt-4o-mini` / `400` | Model and output cap for explanations |
+| `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | `20` / `2` | Per-attempt timeout and retries on transient errors |
 | `LOG_LEVEL` | `INFO` | Root and uvicorn log level |
 | `LOG_FORMAT` | `json` outside dev, `text` in dev | Log line format |
 | `LOG_QUESTIONS` | `false` | Log question text instead of a hash + length |
@@ -329,9 +351,12 @@ Content-Type: application/json
 x-api-key: <your key>
 
 {
-  "question": "What are the top 3 products by revenue?"
+  "question": "What are the top 3 products by revenue?",
+  "explain": true
 }
 ```
+
+`explain` is optional (default `true`); `false` skips the explanation's LLM call and returns `"explanation": null`.
 
 Response:
 
@@ -345,11 +370,12 @@ Response:
   ],
   "row_count": 3,
   "truncated": false,
-  "explanation": "The top three products by revenue are Product A, Product B, and Product C based on the total sales recorded in the database."
+  "explanation": "The top three products by revenue are Product A, Product B, and Product C based on the total sales recorded in the database.",
+  "assumptions": ["\"Top\" means highest total revenue across all time."]
 }
 ```
 
-`sql` is the guard's canonical form of the generated query, which is exactly what was executed. Results are capped at `MAX_RESULT_ROWS`: a query without a smaller `LIMIT` gets `LIMIT MAX_RESULT_ROWS + 1`, and `truncated: true` means more rows existed than were returned.
+`sql` is the guard's canonical form of the generated query, which is exactly what was executed. `assumptions` lists how the model read anything ambiguous in the question (empty when nothing was). Results are capped at `MAX_RESULT_ROWS`: a query without a smaller `LIMIT` gets `LIMIT MAX_RESULT_ROWS + 1`, and `truncated: true` means more rows existed than were returned.
 
 Errors return `{"detail", "code", "request_id"}`: `422` for a rejected or failed query or an invalid question, `502` if the LLM is unavailable, `503` if Postgres or Redis is unavailable, and `504` if a query timed out. Every response carries an `X-Request-ID` header (one you send is reused if it's safe), and the same id appears in the server logs.
 
@@ -367,6 +393,7 @@ make format-check  # the same, check-only (what CI runs)
 make lint          # ruff check (incl. bandit-style S rules) + mypy
 make test          # pytest; fails below 100% line + branch coverage
 make audit         # pip-audit: known vulnerabilities in locked dependencies
+make check         # everything CI's test job runs: format-check, lint, audit, test
 make api-key CLIENT=<id>   # generate a client key and its API_KEYS entry
 make clean         # wipe caches (.pytest_cache, .ruff_cache, .mypy_cache, ...)
 ```
@@ -387,7 +414,7 @@ To bypass the hooks in an emergency, use `git commit --no-verify` or `git push -
 
 ### Tests
 
-Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a mocked LLM. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`.
+Tests live under [`tests/`](tests/) and run against a SQLite test DB, an in-memory Redis that executes the real Lua script ([fakeredis](https://github.com/cunla/fakeredis-py)), and a fake LLM provider ([`tests/fakes.py`](tests/fakes.py)). The app is built with those clients through `create_app(settings, resources_factory=...)`, and tests swap single pieces with `app.dependency_overrides` rather than patching module paths. `make test` **fails below 100% line and branch coverage**, locally and in CI. When running a subset of tests, pass `--no-cov`.
 
 The integration suite in [`tests/integration/`](tests/integration/) runs against a real PostgreSQL. It covers read-only enforcement, timeouts, the guard's canonical SQL, the query scope on a dedicated schema, column privileges and the row cap. CI runs it on every PR. Locally it is skipped unless both URLs are set, e.g. against the compose Postgres:
 
@@ -435,8 +462,9 @@ Planned work lives in [`docs/todos/`](docs/todos/README.md) as audit findings pa
 - **Phase 0:** SQL guard, read-only database, rate limiting, build and packaging.
 - **Phase 1:** typed errors, bounded results, prompt separation, allowlisted query scope, per-client API keys, and full CI gates.
 - **Phase 2:** liveness and readiness checks, OTLP traces and metrics with JSON logs, a fail-open cache, and a hardened non-root container.
+- **Phase 3:** central configuration with clients built at startup, a `QueryPipeline` service with dependency injection, a task-level LLM interface with structured output, schema caching, and the Streamlit fixes.
 
-Next up is Phase 3: central configuration, a query-pipeline service, a task-level LLM interface, schema caching, and the Streamlit fixes.
+Next up is Phase 4 (capabilities), starting with an evaluation harness so answer-quality work is measurable.
 
 ---
 

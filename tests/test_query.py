@@ -8,12 +8,11 @@ Covers:
 - API validation
 """
 
-from ai_bi_analytics.db.session import get_db
-from ai_bi_analytics.main import create_app
+from ai_bi_analytics.api.deps import get_db
 from fastapi.testclient import TestClient
 
 
-def test_query_success(client, sample_products, mock_llm):
+def test_query_success(client, sample_products, fake_llm):
     """
     Should successfully process a query end-to-end.
     """
@@ -33,7 +32,7 @@ def test_query_success(client, sample_products, mock_llm):
     assert isinstance(data["result"], list)
 
 
-def test_query_cache_hit(client, sample_products, mock_llm):
+def test_query_cache_hit(client, sample_products, fake_llm):
     """
     Second request should hit cache.
     """
@@ -57,19 +56,11 @@ def test_query_cache_hit(client, sample_products, mock_llm):
     assert first.json() == second.json()
 
 
-def test_query_invalid_sql_blocked(client, monkeypatch):
+def test_query_invalid_sql_blocked(client, fake_llm):
     """
     Ensure dangerous SQL is rejected.
     """
-
-    class FakeLLM:
-        def complete(self, prompt, system=None):
-            return "DROP TABLE products;"
-
-    monkeypatch.setattr(
-        "ai_bi_analytics.services.nl_to_sql.get_llm_client",
-        lambda: FakeLLM(),
-    )
+    fake_llm.sql = "DROP TABLE products;"
 
     response = client.post(
         "/api/query",
@@ -83,19 +74,17 @@ def test_query_invalid_sql_blocked(client, monkeypatch):
     assert body["request_id"] == response.headers["x-request-id"]
 
 
-def test_query_missing_api_key(db_session):
+def test_query_missing_api_key(raw_app, db_session):
     """
     Should reject requests without API key.
     """
 
-    app = create_app()
-
     def override_get_db():
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
+    raw_app.dependency_overrides[get_db] = override_get_db
 
-    with TestClient(app) as client:
+    with TestClient(raw_app) as client:
         response = client.post(
             "/api/query",
             json={"question": "show products"},

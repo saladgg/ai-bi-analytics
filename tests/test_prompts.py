@@ -7,30 +7,19 @@ import decimal
 import json
 
 import pytest
-from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.schemas.query import QueryRequest
 from ai_bi_analytics.services import explanation, nl_to_sql
+from ai_bi_analytics.services.llm_client import LLMClient
 from ai_bi_analytics.services.prompting import untrusted_block
 from ai_bi_analytics.services.query_executor import QueryResult
 from pydantic import ValidationError
 
-
-class RecordingLLM:
-    def __init__(self, answer="SELECT 1"):
-        self.calls: list[dict] = []
-        self.answer = answer
-
-    def complete(self, prompt, system=None):
-        self.calls.append({"prompt": prompt, "system": system})
-        return self.answer
+from tests.fakes import FakeProvider, fake_openai_provider
 
 
 @pytest.fixture()
-def llm(monkeypatch):
-    recorder = RecordingLLM()
-    monkeypatch.setattr(nl_to_sql, "get_llm_client", lambda: recorder)
-    monkeypatch.setattr(explanation, "get_llm_client", lambda: recorder)
-    return recorder
+def llm(settings):
+    return LLMClient(FakeProvider(sql="SELECT 1"), settings)
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +39,7 @@ def test_too_short_question_rejected(question):
         QueryRequest(question=question)
 
 
-def test_question_at_limit_accepted_and_over_limit_rejected(monkeypatch):
+def test_question_at_limit_accepted_and_over_limit_rejected(settings, monkeypatch):
     monkeypatch.setattr(settings, "max_question_length", 20)
 
     assert QueryRequest(question="x" * 20).question == "x" * 20
@@ -58,13 +47,13 @@ def test_question_at_limit_accepted_and_over_limit_rejected(monkeypatch):
         QueryRequest(question="x" * 21)
 
 
-def test_oversized_question_is_422_and_never_reaches_llm(client, llm):
+def test_oversized_question_is_422_and_never_reaches_llm(client, fake_llm, settings):
     response = client.post(
         "/api/query", json={"question": "x" * (settings.max_question_length + 1)}
     )
 
     assert response.status_code == 422
-    assert llm.calls == []
+    assert fake_llm.calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +88,9 @@ def test_untrusted_block_cannot_be_closed_early(payload):
 
 
 def test_sql_prompt_separates_rules_from_untrusted_input(llm):
-    nl_to_sql.generate_sql("top products", "products(id INTEGER, name TEXT)\n")
+    llm.generate_sql("top products", "products(id INTEGER, name TEXT)\n")
 
-    call = llm.calls[0]
+    call = llm.provider.calls[0]
     assert call["system"] == nl_to_sql.SQL_GENERATION_RULES
     assert "Only generate" not in call["prompt"]
     assert "<schema>\nproducts(id INTEGER, name TEXT)\n\n</schema>" in call["prompt"]
@@ -125,9 +114,9 @@ def test_explanation_prompt_separates_rules_from_rows(llm):
         }
     ]
 
-    explanation.explain_result("q?", "SELECT 1", QueryResult(rows))
+    llm.explain("q?", "SELECT 1", QueryResult(rows))
 
-    call = llm.calls[0]
+    call = llm.provider.calls[0]
     assert call["system"] == explanation.EXPLANATION_RULES
     prompt = call["prompt"]
     assert prompt.count("</result>") == 1  # the row's fake closer is removed
@@ -139,44 +128,50 @@ def test_explanation_prompt_separates_rules_from_rows(llm):
 
 
 # ---------------------------------------------------------------------------
-# OpenAI client message layout
+# OpenAI request layout
 # ---------------------------------------------------------------------------
 
 
-def capture_messages(monkeypatch):
-    from ai_bi_analytics.services import llm_client
-
-    sent: list[list[dict]] = []
-
-    class Completions:
-        def create(self, **kwargs):
-            sent.append(kwargs["messages"])
-            message = type("M", (), {"content": "ok"})()
-            return type("R", (), {"choices": [type("C", (), {"message": message})()]})()
-
-    class FakeOpenAI:
-        def __init__(self, api_key):
-            self.chat = type("Chat", (), {"completions": Completions()})()
-
-    monkeypatch.setattr(llm_client, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    return llm_client.OpenAILLMClient(), sent
+def capture_requests(monkeypatch, settings):
+    sent: list[dict] = []
+    return fake_openai_provider(monkeypatch, settings, content="ok", sent=sent), sent
 
 
-def test_system_message_sent_first(monkeypatch):
-    client, sent = capture_messages(monkeypatch)
+def test_system_message_sent_first(monkeypatch, settings):
+    provider, sent = capture_requests(monkeypatch, settings)
 
-    client.complete("user text", system="rules")
+    provider.complete(system="rules", prompt="user text", model="m", max_tokens=9)
 
-    assert sent[0] == [
+    assert sent[0]["messages"] == [
         {"role": "system", "content": "rules"},
         {"role": "user", "content": "user text"},
     ]
+    assert sent[0]["model"] == "m" and sent[0]["max_tokens"] == 9
+    assert "response_format" not in sent[0]
 
 
-def test_no_system_message_when_not_given(monkeypatch):
-    client, sent = capture_messages(monkeypatch)
+def test_structured_output_requests_strict_json_schema(monkeypatch, settings):
+    provider, sent = capture_requests(monkeypatch, settings)
 
-    client.complete("user text")
+    LLMClient(provider, settings).generate_sql("q", "t(a int)\n")
 
-    assert sent[0] == [{"role": "user", "content": "user text"}]
+    assert sent[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "sql_query",
+            "schema": nl_to_sql.SQL_RESPONSE_SCHEMA,
+            "strict": True,
+        },
+    }
+    assert sent[0]["model"] == settings.llm_sql_model
+    assert sent[0]["max_tokens"] == settings.llm_sql_max_tokens
+
+
+def test_explanation_uses_its_own_model_and_cap(monkeypatch, settings):
+    monkeypatch.setattr(settings, "llm_explain_model", "explainer")
+    monkeypatch.setattr(settings, "llm_explain_max_tokens", 123)
+    provider, sent = capture_requests(monkeypatch, settings)
+
+    LLMClient(provider, settings).explain("q", "SELECT 1", QueryResult([]))
+
+    assert sent[0]["model"] == "explainer" and sent[0]["max_tokens"] == 123

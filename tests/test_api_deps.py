@@ -3,8 +3,8 @@ API-key authentication (audit SEC-8).
 """
 
 import pytest
-from ai_bi_analytics.api.deps import build_key_store, verify_api_key
-from ai_bi_analytics.core.config import Settings, settings
+from ai_bi_analytics.api.deps import build_key_store, get_db, verify_api_key
+from ai_bi_analytics.core.config import Settings
 from ai_bi_analytics.core.security import (
     ApiKeyStore,
     Principal,
@@ -17,7 +17,6 @@ from ai_bi_analytics.core.startup_checks import (
     UnsafeConfigurationError,
     check_api_keys,
 )
-from ai_bi_analytics.db.session import get_db
 from ai_bi_analytics.main import create_app
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -43,7 +42,7 @@ def no_key_env(monkeypatch):
 
 
 @pytest.fixture()
-def two_clients(monkeypatch):
+def two_clients(settings, monkeypatch):
     monkeypatch.setattr(
         settings, "api_keys", [entry("alice", ALICE_KEY), entry("bob", BOB_KEY)]
     )
@@ -55,35 +54,35 @@ def two_clients(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_each_key_maps_to_its_client(two_clients):
-    assert verify_api_key(ALICE_KEY) == Principal("alice")
-    assert verify_api_key(BOB_KEY) == Principal("bob")
+def test_each_key_maps_to_its_client(two_clients, settings):
+    assert verify_api_key(ALICE_KEY, settings) == Principal("alice")
+    assert verify_api_key(BOB_KEY, settings) == Principal("bob")
 
 
 @pytest.mark.parametrize("presented", [None, "", "wrong", ALICE_KEY + "x"])
-def test_missing_or_unknown_key_is_401(two_clients, presented):
+def test_missing_or_unknown_key_is_401(two_clients, settings, presented):
     with pytest.raises(HTTPException) as exc:
-        verify_api_key(presented)
+        verify_api_key(presented, settings)
 
     assert exc.value.status_code == 401
     assert exc.value.detail == "Invalid or missing API key"
     assert exc.value.headers == {"WWW-Authenticate": "APIKey"}
 
 
-def test_legacy_single_key_authenticates_as_default(monkeypatch):
+def test_legacy_single_key_authenticates_as_default(settings, monkeypatch):
     monkeypatch.setattr(settings, "api_keys", [])
     monkeypatch.setattr(settings, "api_key", SecretStr("legacy-key"))
 
-    assert verify_api_key("legacy-key") == Principal("default")
+    assert verify_api_key("legacy-key", settings) == Principal("default")
 
 
-def test_legacy_and_listed_keys_coexist(monkeypatch):
+def test_legacy_and_listed_keys_coexist(settings, monkeypatch):
     monkeypatch.setattr(settings, "api_keys", [entry("alice", ALICE_KEY)])
     monkeypatch.setattr(settings, "api_key", SecretStr("legacy-key"))
 
     assert len(build_key_store(settings)) == 2
-    assert verify_api_key(ALICE_KEY) == Principal("alice")
-    assert verify_api_key("legacy-key") == Principal("default")
+    assert verify_api_key(ALICE_KEY, settings) == Principal("alice")
+    assert verify_api_key("legacy-key", settings) == Principal("default")
 
 
 def test_rotation_two_keys_for_one_client_both_work():
@@ -159,10 +158,16 @@ def test_duplicate_client_ids_rejected():
         make_settings(API_KEYS=f"{entry('a', 'x')},{entry('a', 'y')}")
 
 
-def test_api_key_is_secret():
-    cfg = make_settings(API_KEY="super-secret-value")
+def test_secrets_stay_out_of_repr():
+    cfg = make_settings(
+        API_KEY="super-secret-value",
+        OPENAI_API_KEY="sk-secret-value",
+        DATABASE_URL="postgresql://u:db-secret-value@h/db",
+        REDIS_URL="redis://:redis-secret-value@h:6379/0",
+    )
 
-    assert "super-secret-value" not in repr(cfg)
+    for secret in ("super", "sk-secret", "db-secret", "redis-secret"):
+        assert secret not in repr(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +200,12 @@ def test_strong_or_absent_legacy_key_passes():
 # ---------------------------------------------------------------------------
 
 
-def test_rate_limit_is_per_client(two_clients, db_session, sample_products, mock_llm):
-    app = create_app()
-    app.dependency_overrides[get_db] = lambda: db_session
+def test_rate_limit_is_per_client(
+    two_clients, raw_app, settings, db_session, sample_products
+):
+    raw_app.dependency_overrides[get_db] = lambda: db_session
 
-    with TestClient(app) as client:
+    with TestClient(raw_app) as client:
         statuses = {
             name: [
                 client.post(
@@ -218,8 +224,8 @@ def test_rate_limit_is_per_client(two_clients, db_session, sample_products, mock
     assert statuses["bob"][:-1] == [200] * settings.rate_limit_requests
 
 
-def test_openapi_declares_api_key_scheme():
-    schema = create_app().openapi()
+def test_openapi_declares_api_key_scheme(settings):
+    schema = create_app(settings).openapi()
 
     assert schema["components"]["securitySchemes"]["APIKeyHeader"] == {
         "type": "apiKey",

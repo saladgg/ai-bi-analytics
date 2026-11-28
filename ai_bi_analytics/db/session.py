@@ -1,8 +1,9 @@
 """
 Database session management.
 
-Provides the SQLAlchemy engine and session factory, and the guards that
-keep query execution read-only at the database layer (audit SEC-2).
+Builds the SQLAlchemy engine and session factory (in the app's lifespan,
+not at import; audit ARCH-2), and the guards that keep query execution
+read-only at the database layer (audit SEC-2).
 
 The SQL guard (`services/sql_validator.py`) is the first line of defence;
 everything here is the second, and must hold even if the guard is
@@ -21,14 +22,14 @@ from typing import Any
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
-from ai_bi_analytics.core.config import settings
+from ai_bi_analytics.core.config import Settings
 
 logger = logging.getLogger(__name__)
 
 DEVELOPMENT_ENV = "development"
-CONNECT_TIMEOUT_SECONDS = 5
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def is_postgres_url(database_url: str) -> bool:
@@ -40,6 +41,10 @@ def build_engine_kwargs(
     statement_timeout_ms: int,
     idle_in_transaction_timeout_ms: int,
     search_path: str = "public",
+    *,
+    connect_timeout_seconds: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    pool_size: int | None = None,
+    max_overflow: int | None = None,
 ) -> dict[str, Any]:
     """
     Engine options. On Postgres, every connection is read-only by default
@@ -52,10 +57,14 @@ def build_engine_kwargs(
     """
     kwargs: dict[str, Any] = {"pool_pre_ping": True}
     if is_postgres_url(database_url):
+        if pool_size is not None:
+            kwargs["pool_size"] = pool_size
+        if max_overflow is not None:
+            kwargs["max_overflow"] = max_overflow
         kwargs["connect_args"] = {
             # Fail fast on an unreachable host instead of hanging requests
             # and readiness probes on the OS TCP timeout (audit OPS-3).
-            "connect_timeout": CONNECT_TIMEOUT_SECONDS,
+            "connect_timeout": connect_timeout_seconds,
             "options": (
                 "-c default_transaction_read_only=on "
                 f"-c statement_timeout={statement_timeout_ms} "
@@ -69,35 +78,24 @@ def build_engine_kwargs(
     return kwargs
 
 
-engine = create_engine(
-    settings.database_url,
-    **build_engine_kwargs(
-        settings.database_url,
-        settings.db_statement_timeout_ms,
-        settings.db_idle_in_transaction_timeout_ms,
-        settings.queryable_schema,
-    ),
-)
+def build_engine(cfg: Settings) -> Engine:
+    """The query engine. Creating it doesn't connect; the pool connects lazily."""
+    return create_engine(
+        cfg.database_url,
+        **build_engine_kwargs(
+            cfg.database_url,
+            cfg.db_statement_timeout_ms,
+            cfg.db_idle_in_transaction_timeout_ms,
+            cfg.queryable_schema,
+            connect_timeout_seconds=cfg.db_connect_timeout_seconds,
+            pool_size=cfg.db_pool_size,
+            max_overflow=cfg.db_max_overflow,
+        ),
+    )
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-)
 
-
-def get_db():
-    """
-    Dependency generator for database session.
-
-    Yields:
-        Session: SQLAlchemy session.
-    """
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def build_session_factory(db_engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
 
 
 ROLE_PRIVILEGE_QUERY = text(

@@ -4,17 +4,15 @@ Health endpoints and lifecycle (audit OPS-3).
 
 import pytest
 from ai_bi_analytics.core import redis_client as redis_module
-from ai_bi_analytics.db import session as db_session
-from ai_bi_analytics.db.session import CONNECT_TIMEOUT_SECONDS, build_engine_kwargs
-from ai_bi_analytics.main import create_app
+from ai_bi_analytics.db.session import build_engine_kwargs
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
 
 @pytest.fixture()
-def raw_client():
+def raw_client(raw_app):
     # No auth/DB overrides: health must work for an anonymous caller.
-    with TestClient(create_app()) as client:
+    with TestClient(raw_app) as client:
         yield client
 
 
@@ -36,11 +34,11 @@ def test_readiness_ok_when_dependencies_answer(raw_client):
     }
 
 
-def test_readiness_503_when_database_down(raw_client, monkeypatch, caplog):
+def test_readiness_503_when_database_down(raw_client, resources, monkeypatch, caplog):
     def refuse(*_args, **_kwargs):
         raise OperationalError("connect", {}, Exception("db.internal refused"))
 
-    monkeypatch.setattr(db_session.engine, "connect", refuse)
+    monkeypatch.setattr(resources.engine, "connect", refuse)
 
     response = raw_client.get("/api/health/ready")
 
@@ -71,26 +69,62 @@ def test_health_is_not_rate_limited(raw_client):
         assert raw_client.get("/api/health/ready").status_code == 200
 
 
-def test_shutdown_disposes_pool_and_closes_redis(monkeypatch, fake_redis):
+def test_shutdown_closes_every_client(raw_app, resources, fake_llm, monkeypatch):
     calls = []
-    monkeypatch.setattr(db_session.engine, "dispose", lambda: calls.append("db"))
-    monkeypatch.setattr(fake_redis, "close", lambda: calls.append("redis"))
+    monkeypatch.setattr(resources.engine, "dispose", lambda: calls.append("db"))
+    monkeypatch.setattr(resources.redis, "close", lambda: calls.append("redis"))
 
-    with TestClient(create_app()):
-        assert calls == []
+    with TestClient(raw_app):
+        assert calls == [] and not fake_llm.closed
 
-    assert calls == ["db", "redis"]
+    assert calls == ["redis", "db"]
+    assert fake_llm.closed
+
+
+def test_one_failing_close_does_not_stop_the_others(resources, monkeypatch, caplog):
+    calls = []
+
+    def broken():
+        raise RuntimeError("socket already gone")
+
+    monkeypatch.setattr(resources.redis, "close", broken)
+    monkeypatch.setattr(resources.engine, "dispose", lambda: calls.append("db"))
+
+    resources.close()
+
+    assert calls == ["db"]
+    assert "Closing the redis client failed" in caplog.text
+
+
+def test_clients_close_when_startup_fails(settings, resources, monkeypatch):
+    from ai_bi_analytics import main
+
+    closed = []
+    monkeypatch.setattr(resources, "close", lambda: closed.append(True))
+
+    def unsafe(*_args):
+        raise RuntimeError("privileged role")
+
+    monkeypatch.setattr(main, "assert_database_role_is_safe", unsafe)
+    app = main.create_app(settings, resources_factory=lambda _cfg: resources)
+
+    with pytest.raises(RuntimeError, match="privileged role"), TestClient(app):
+        pass  # pragma: no cover - startup raises first
+
+    assert closed == [True]
 
 
 def test_postgres_connections_have_connect_timeout():
-    kwargs = build_engine_kwargs("postgresql://u:p@h/db", 1, 1)
+    kwargs = build_engine_kwargs(
+        "postgresql://u:p@h/db", 1, 1, connect_timeout_seconds=7
+    )
 
-    assert kwargs["connect_args"]["connect_timeout"] == CONNECT_TIMEOUT_SECONDS
+    assert kwargs["connect_args"]["connect_timeout"] == 7
 
 
 def test_redis_client_has_socket_timeouts():
-    client = redis_module.build_redis_client("redis://localhost:6399/0")
+    client = redis_module.build_redis_client("redis://localhost:6399/0", 1.5)
     kwargs = client.connection_pool.connection_kwargs
 
-    assert kwargs["socket_timeout"] == redis_module.SOCKET_TIMEOUT_SECONDS
-    assert kwargs["socket_connect_timeout"] == redis_module.SOCKET_TIMEOUT_SECONDS
+    assert kwargs["socket_timeout"] == 1.5
+    assert kwargs["socket_connect_timeout"] == 1.5

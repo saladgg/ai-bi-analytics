@@ -9,7 +9,6 @@ import time
 
 import pytest
 from ai_bi_analytics.core import rate_limiter
-from ai_bi_analytics.core.config import settings
 from ai_bi_analytics.core.rate_limiter import (
     KEY_PREFIX,
     check_rate_limit,
@@ -29,29 +28,35 @@ class DummyRequest:
 
 
 @pytest.fixture(autouse=True)
-def default_limits(monkeypatch):
+def default_limits(settings, monkeypatch):
     monkeypatch.setattr(settings, "rate_limit_requests", LIMIT)
     monkeypatch.setattr(settings, "rate_limit_window_seconds", WINDOW)
 
 
-def test_allows_up_to_the_limit_then_rejects():
+@pytest.fixture()
+def limit(fake_redis, settings):
+    """enforce_rate_limit against the fake Redis and current settings."""
+    return lambda request: enforce_rate_limit(request, fake_redis, settings)
+
+
+def test_allows_up_to_the_limit_then_rejects(limit):
     request = DummyRequest()
 
-    remaining = [enforce_rate_limit(request).remaining for _ in range(LIMIT)]
+    remaining = [limit(request).remaining for _ in range(LIMIT)]
 
     assert remaining == [4, 3, 2, 1, 0]
     with pytest.raises(HTTPException) as exc:
-        enforce_rate_limit(request)
+        limit(request)
     assert exc.value.status_code == 429
 
 
-def test_rejection_carries_retry_after_and_limit_headers():
+def test_rejection_carries_retry_after_and_limit_headers(limit):
     request = DummyRequest()
     for _ in range(LIMIT):
-        enforce_rate_limit(request)
+        limit(request)
 
     with pytest.raises(HTTPException) as exc:
-        enforce_rate_limit(request)
+        limit(request)
 
     headers = exc.value.headers
     assert headers["X-RateLimit-Limit"] == str(LIMIT)
@@ -59,11 +64,11 @@ def test_rejection_carries_retry_after_and_limit_headers():
     assert 1 <= int(headers["Retry-After"]) <= WINDOW
 
 
-def test_rejected_requests_are_not_recorded(fake_redis):
+def test_rejected_requests_are_not_recorded(fake_redis, limit):
     request = DummyRequest()
     for _ in range(LIMIT + 3):
         try:
-            enforce_rate_limit(request)
+            limit(request)
         except HTTPException:
             pass
 
@@ -73,25 +78,25 @@ def test_rejected_requests_are_not_recorded(fake_redis):
 def test_burst_within_one_millisecond_is_fully_counted(fake_redis):
     # Whole-second timestamps used as members made a burst collapse into
     # one entry. Every request must be recorded.
-    results = [check_rate_limit("burst", 100, WINDOW) for _ in range(50)]
+    results = [check_rate_limit(fake_redis, "burst", 100, WINDOW) for _ in range(50)]
 
     assert all(r.allowed for r in results)
     assert fake_redis.zcard(KEY_PREFIX + "burst") == 50
 
 
-def test_spoofed_forwarded_for_does_not_open_new_buckets():
+def test_spoofed_forwarded_for_does_not_open_new_buckets(limit):
     for i in range(LIMIT):
-        enforce_rate_limit(DummyRequest(headers={"X-Forwarded-For": f"10.0.0.{i}"}))
+        limit(DummyRequest(headers={"X-Forwarded-For": f"10.0.0.{i}"}))
 
     with pytest.raises(HTTPException):
-        enforce_rate_limit(DummyRequest(headers={"X-Forwarded-For": "10.9.9.9"}))
+        limit(DummyRequest(headers={"X-Forwarded-For": "10.9.9.9"}))
 
 
-def test_clients_have_independent_windows():
+def test_clients_have_independent_windows(limit):
     for _ in range(LIMIT):
-        enforce_rate_limit(DummyRequest("1.1.1.1"))
+        limit(DummyRequest("1.1.1.1"))
 
-    assert enforce_rate_limit(DummyRequest("2.2.2.2")).allowed
+    assert limit(DummyRequest("2.2.2.2")).allowed
 
 
 def test_entries_older_than_the_window_are_pruned(fake_redis):
@@ -99,14 +104,14 @@ def test_entries_older_than_the_window_are_pruned(fake_redis):
     stale_ms = int(time.time() * 1000) - (WINDOW * 1000) - 1
     fake_redis.zadd(key, {f"{stale_ms}:{i}": stale_ms for i in range(LIMIT)})
 
-    result = check_rate_limit("old", LIMIT, WINDOW)
+    result = check_rate_limit(fake_redis, "old", LIMIT, WINDOW)
 
     assert result.allowed
     assert fake_redis.zcard(key) == 1
 
 
 def test_key_expires_with_the_window(fake_redis):
-    check_rate_limit("ttl", LIMIT, WINDOW)
+    check_rate_limit(fake_redis, "ttl", LIMIT, WINDOW)
 
     assert 0 < fake_redis.pttl(KEY_PREFIX + "ttl") <= WINDOW * 1000
 
@@ -122,9 +127,7 @@ def test_lua_script_loads_independently_of_working_directory(tmp_path, monkeypat
     assert "ZREMRANGEBYSCORE" in rate_limiter._lua_source()
 
 
-def test_query_endpoint_returns_rate_limit_headers_then_429(
-    client, sample_products, mock_llm
-):
+def test_query_endpoint_returns_rate_limit_headers_then_429(client, sample_products):
     payload = {"question": "show all products"}
 
     first = client.post("/api/query", json=payload)
@@ -140,16 +143,10 @@ def test_query_endpoint_returns_rate_limit_headers_then_429(
     assert "Retry-After" in blocked.headers
 
 
-def test_error_responses_keep_rate_limit_headers(client, monkeypatch):
+def test_error_responses_keep_rate_limit_headers(client, fake_llm):
     """A request that passed the limiter but then failed (here: unsafe SQL)
     still reports the caller's remaining budget."""
-    from ai_bi_analytics.services import nl_to_sql
-
-    class DropLLM:
-        def complete(self, prompt, system=None):
-            return "DROP TABLE products"
-
-    monkeypatch.setattr(nl_to_sql, "get_llm_client", lambda: DropLLM())
+    fake_llm.sql = "DROP TABLE products"
 
     response = client.post("/api/query", json={"question": "drop it"})
 

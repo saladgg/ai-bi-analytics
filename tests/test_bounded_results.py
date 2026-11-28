@@ -5,13 +5,15 @@ Bounded queries and results (audit SEC-5).
 import json
 
 import pytest
-from ai_bi_analytics.core.config import settings
-from ai_bi_analytics.services import cache, explanation
+from ai_bi_analytics.services.cache import ResultCache
 from ai_bi_analytics.services.explanation import describe_row_count
+from ai_bi_analytics.services.llm_client import LLMClient
 from ai_bi_analytics.services.query_executor import QueryResult, execute_query
 from ai_bi_analytics.services.sql_validator import validate_sql
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
+
+from tests.fakes import FakeProvider
 
 
 def capped(sql, max_rows=100):
@@ -124,23 +126,19 @@ def test_describe_row_count(rows, truncated, shown, expected):
     assert describe_row_count(result, shown) == expected
 
 
-def test_explanation_gets_bounded_sample(monkeypatch):
-    prompts = []
-
-    class LLM:
-        def complete(self, prompt, system=None):
-            prompts.append(prompt)
-            return "ok"
-
-    monkeypatch.setattr(explanation, "get_llm_client", lambda: LLM())
+def test_explanation_gets_bounded_sample(settings, monkeypatch):
+    provider = FakeProvider()
     monkeypatch.setattr(settings, "explanation_sample_rows", 2)
 
     rows = [{"v": i} for i in range(500)]
-    explanation.explain_result("q", "SELECT v FROM n", QueryResult(rows, True))
+    LLMClient(provider, settings).explain(
+        "q", "SELECT v FROM n", QueryResult(rows, True)
+    )
 
-    payload = prompts[0].split("<result>\n")[1].split("\n</result>")[0]
+    prompt = provider.calls[0]["prompt"]
+    payload = prompt.split("<result>\n")[1].split("\n</result>")[0]
     assert json.loads(payload) == [{"v": 0}, {"v": 1}]
-    assert "Rows returned: more than 500; the first 2 are shown." in prompts[0]
+    assert "Rows returned: more than 500; the first 2 are shown." in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -148,16 +146,19 @@ def test_explanation_gets_bounded_sample(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_small_responses_are_cached():
-    assert cache.set_cached_response("k", {"a": 1}) is True
-    assert cache.get_cached_response("k") == {"a": 1}
+def test_small_responses_are_cached(fake_redis, settings):
+    cache = ResultCache(fake_redis, settings)
+
+    assert cache.set("k", {"a": 1}) is True
+    assert cache.get("k") == {"a": 1}
 
 
-def test_oversized_responses_are_not_cached(monkeypatch, caplog):
+def test_oversized_responses_are_not_cached(fake_redis, settings, monkeypatch, caplog):
+    cache = ResultCache(fake_redis, settings)
     monkeypatch.setattr(settings, "cache_max_bytes", 10)
 
-    assert cache.set_cached_response("big", {"a": "x" * 50}) is False
-    assert cache.get_cached_response("big") is None
+    assert cache.set("big", {"a": "x" * 50}) is False
+    assert cache.get("big") is None
     assert "not cached" in caplog.text
 
 
@@ -166,15 +167,10 @@ def test_oversized_responses_are_not_cached(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_route_caps_rows_and_reports_truncation(client, sample_products, monkeypatch):
-    from ai_bi_analytics.services import nl_to_sql
-
-    class LLM:
-        def complete(self, prompt, system=None):
-            return "SELECT name FROM products ORDER BY name"
-
-    monkeypatch.setattr(nl_to_sql, "get_llm_client", lambda: LLM())
-    monkeypatch.setattr(explanation, "get_llm_client", lambda: LLM())
+def test_route_caps_rows_and_reports_truncation(
+    client, sample_products, fake_llm, settings, monkeypatch
+):
+    fake_llm.sql = "SELECT name FROM products ORDER BY name"
     monkeypatch.setattr(settings, "max_result_rows", 2)
 
     body = client.post("/api/query", json={"question": "all product names"}).json()

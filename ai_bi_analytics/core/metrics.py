@@ -31,6 +31,10 @@ cache_lookups = _meter.create_counter(
     "aibi.cache.lookups",
     description="Response cache lookups, by result (hit, miss or error).",
 )
+schema_cache_lookups = _meter.create_counter(
+    "aibi.schema_cache.lookups",
+    description="Query-scope cache lookups, by result (hit or miss).",
+)
 errors = _meter.create_counter(
     "aibi.errors",
     description="Client-visible errors, by stable error code.",

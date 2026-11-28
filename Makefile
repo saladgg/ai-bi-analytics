@@ -8,37 +8,40 @@
 .PHONY: help
 help:
 	@echo "Available commands:"
-	@echo "  make install        Install production dependencies"
-	@echo "  make install-dev    Install dev dependencies"
-	@echo "  make install-test   Install test dependencies"
-	@echo "  make run            Run development server"
-	@echo "  make prod           Run production server"
-	@echo "  make lint           Run ruff"
-	@echo "  make format         Format code"
+	@echo "  make venv_setup     Create .venv with a uv-managed Python 3.14"
+	@echo "  make install        Install runtime dependencies"
+	@echo "  make install-dev    Install dev dependencies (tests, lint, demo UI)"
+	@echo "  make install-test   Install runtime + test dependencies"
+	@echo "  make update         Upgrade locked dependency versions"
+	@echo "  make run_local      Run the API with auto-reload on :8000"
+	@echo "  make run_prod       Run the API without reload"
+	@echo "  make run_frontend   Run the Streamlit demo on :8501"
+	@echo "  make format         Format code and apply lint fixes"
 	@echo "  make format-check   Check formatting without changing files (CI)"
+	@echo "  make lint           ruff + mypy"
 	@echo "  make test           Run tests (fails under 100% line+branch coverage)"
 	@echo "  make audit          Audit dependencies for known vulnerabilities"
+	@echo "  make check          Everything CI checks: format-check, lint, audit, test"
 	@echo "  make hooks-install  Install pre-commit + pre-push hooks (once per clone)"
 	@echo "  make hooks-run      Run every hook (both stages) on all files"
 	@echo "  make docker-build   Build Docker image"
 	@echo "  make docker-up      Run api + postgres + redis (image as built)"
 	@echo "  make docker-up-dev  Same, with the source mounted and auto-reload"
+	@echo "  make docker-down    Stop the stack and delete its volumes"
+	@echo "  make build          Build the wheel and sdist into dist/"
 	@echo "  make api-key CLIENT=<id>  Generate a client API key + API_KEYS entry"
-
+	@echo "  make clean          Remove caches and build output"
 
 
 # ----------------------------------------------------------
 # Dependency Management
 # ----------------------------------------------------------
-# Create ~/.netrc for private pip credentials(for uv)
-# Use `only-managed` to bypass sudo installed system python
-
-VENV_PYTHON := .venv/bin/python
+# `only-managed` uses a uv-managed interpreter, not the system Python.
 
 .PHONY: venv_setup
 venv_setup:
-	uv venv --python 3.14 --python-preference only-managed &
-	source .venv/bin/activate
+	uv venv --python 3.14 --python-preference only-managed
+	@echo "Activate with: source .venv/bin/activate (or prefix commands with uv run)"
 
 .PHONY: install install-dev install-test update
 
@@ -71,7 +74,7 @@ api-key:
 	@test -n "$(CLIENT)" || (echo "usage: make api-key CLIENT=<client_id>" && exit 2)
 	uv run python -m ai_bi_analytics.core.security $(CLIENT)
 
-.PHONY: format format-check lint test
+.PHONY: format format-check lint test check
 
 format:
 	uv run ruff format $(LINT_PATHS)
@@ -86,6 +89,9 @@ lint:
 
 test:
 	uv run pytest
+
+# What CI's test job runs, in the same order.
+check: format-check lint audit test
 
 .PHONY: hooks-install hooks-run
 hooks-install:
@@ -155,14 +161,8 @@ build:
 	rm -rf dist
 	uv build
 
-.PHONY: tempTarget
-tempTarget:
-	UV_PUBLISH_USERNAME=$(CI_PYPI_USER) \
-	UV_PUBLISH_PASSWORD=$(CI_PYPI_PASSWORD) \
-	uv publish --index temp_index dist/*
-
-.PHONY: release
-release: build publish
+# Releases are automated (semantic-release on main after CI passes); see
+# README "Releases". There is no manual release target.
 
 
 # ----------------------------------------------------------
@@ -171,14 +171,9 @@ release: build publish
 
 .PHONY: clean
 clean:
-	# Remove all Python cache directories
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find . -type d -name "*.pyc" -delete
-	find . -type d -name ".pytest_cache" -exec rm -rf {} +
-	find . -type d -name ".ruff_cache" -exec rm -rf {} +
-	find . -type d -name ".mypy_cache" -exec rm -rf {} +
-	find . -type d -name ".coverage" -delete
-	find . -type d -name "htmlcov" -exec rm -rf {} +
-	find . -type d -name ".tox" -exec rm -rf {} +
-	find . -type d -name ".eggs" -exec rm -rf {} +
-	find . -type d -name "*.egg-info" -exec rm -rf {} +
+	# Caches and build output; never touches .venv or .env.
+	find . -path ./.venv -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" \
+		-o -name ".ruff_cache" -o -name ".mypy_cache" -o -name "htmlcov" \
+		-o -name "*.egg-info" \) -exec rm -rf {} +
+	find . -path ./.venv -prune -o -type f -name "*.py[co]" -delete
+	rm -rf .coverage coverage.xml dist build test.db

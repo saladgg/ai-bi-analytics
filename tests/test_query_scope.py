@@ -207,25 +207,66 @@ def test_no_redactions_means_no_redaction_checks():
     assert guard("SELECT * FROM users", redacted_columns={"users": set()})
 
 
-def test_route_enforces_scope_end_to_end(client, monkeypatch):
+def test_llm_key_required_outside_dev():
+    from ai_bi_analytics.core.startup_checks import check_llm_configured
+
+    with pytest.raises(UnsafeConfigurationError, match="OPENAI_API_KEY"):
+        check_llm_configured(make_settings(ENV="production"))
+    check_llm_configured(make_settings(ENV="production", OPENAI_API_KEY="sk-x"))
+    check_llm_configured(make_settings(ENV="production", LLM_PROVIDER="other"))
+
+
+def test_missing_llm_key_only_warns_in_dev(caplog):
+    from ai_bi_analytics.core.startup_checks import check_llm_configured
+
+    check_llm_configured(make_settings(ENV="development"))
+
+    assert "OPENAI_API_KEY is not set" in caplog.text
+
+
+@pytest.mark.parametrize("value", ["Production", " STAGING "])
+def test_env_is_case_insensitive(value):
+    assert make_settings(ENV=value).env == value.strip().lower()
+
+
+def test_env_example_loads(tmp_path, monkeypatch):
+    """`cp .env.example .env` must give a config that starts: the file also
+    carries compose/uvicorn/OTel variables the app doesn't read."""
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / ".env.example"
+    for name in ("API_KEY", "API_KEYS", "DATABASE_URL", "ENV", "REDIS_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+    cfg = Settings(_env_file=example)
+
+    assert cfg.queryable_tables == ["products"]
+    assert cfg.redis_url.host == "localhost"
+
+
+def test_unknown_dotenv_entries_are_ignored(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "API_KEY=k\nDATABASE_URL=sqlite://\nREDIS_PASSWORD=x\n"
+        "FORWARDED_ALLOW_IPS=10.0.0.1\nOTEL_SERVICE_NAME=bi\n"
+    )
+
+    assert Settings(_env_file=env_file).api_key is not None
+
+
+def test_unknown_env_rejected():
+    with pytest.raises(ValidationError, match="ENV"):
+        make_settings(ENV="prod")
+
+
+def test_route_enforces_scope_end_to_end(client, fake_llm, settings, monkeypatch):
     """The model is only shown allowlisted tables, and SQL that strays
     outside them is rejected even if the model produces it."""
-    from ai_bi_analytics.core.config import settings
-    from ai_bi_analytics.services import explanation, nl_to_sql
-
-    prompts = []
-
-    class LLM:
-        def complete(self, prompt, system=None):
-            prompts.append(prompt)
-            return "SELECT * FROM secret_table"
-
+    fake_llm.sql = "SELECT * FROM secret_table"
     monkeypatch.setattr(settings, "queryable_tables", ["products"])
-    monkeypatch.setattr(nl_to_sql, "get_llm_client", lambda: LLM())
-    monkeypatch.setattr(explanation, "get_llm_client", lambda: LLM())
 
     response = client.post("/api/query", json={"question": "show secrets"})
 
     assert response.status_code == 422
     assert "Unknown table 'secret_table'" in response.json()["detail"]
-    assert "products(" in prompts[0]
+    assert "products(" in fake_llm.calls[0]["prompt"]

@@ -1,8 +1,7 @@
 """
-Database models.
-
-Defines SQLAlchemy ORM models representing
-analytics-ready business entities.
+Test-only ORM model: the ``products`` table the suite queries. The app
+itself never maps tables; it introspects whatever the database has
+(audit CQ-2 moved this out of the package).
 """
 
 from sqlalchemy import Float, Integer, String
@@ -14,10 +13,6 @@ class Base(DeclarativeBase):
 
 
 class Product(Base):
-    """
-    Represents a product entity in the analytics database.
-    """
-
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

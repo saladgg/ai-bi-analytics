@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
 
+import redis
 from fastapi import HTTPException, Request, status
+from redis.commands.core import Script
 from redis.exceptions import RedisError
 
 from ai_bi_analytics.core import metrics
-from ai_bi_analytics.core.config import settings
-from ai_bi_analytics.core.redis_client import redis_client
+from ai_bi_analytics.core.config import Settings
 
 KEY_PREFIX = "rate_limit:"
 
@@ -53,9 +54,9 @@ def _lua_source() -> str:
     )
 
 
-def get_rate_limit_script():
+def get_rate_limit_script(client: redis.Redis) -> Script:
     # register_script only hashes the source client-side; no round trip.
-    return redis_client.register_script(_lua_source())
+    return client.register_script(_lua_source())
 
 
 def client_identifier(request: Request) -> str:
@@ -71,11 +72,12 @@ def client_identifier(request: Request) -> str:
 
 
 def check_rate_limit(
+    client: redis.Redis,
     identifier: str,
     limit: int,
     window_seconds: int,
 ) -> RateLimitResult:
-    allowed, count, retry_after_ms = get_rate_limit_script()(
+    allowed, count, retry_after_ms = get_rate_limit_script(client)(
         keys=[KEY_PREFIX + identifier],
         args=[window_seconds * 1000, limit, uuid.uuid4().hex],
     )
@@ -88,12 +90,17 @@ def check_rate_limit(
 
 
 def enforce_rate_limit(
-    request: Request, identity: str | None = None
+    request: Request,
+    client: redis.Redis,
+    cfg: Settings,
+    identity: str | None = None,
 ) -> RateLimitResult:
     """
     Records the request against the caller's window.
 
     Args:
+        client: Redis holding the windows.
+        cfg: Limits and the fail-open policy.
         identity: Bucket for an authenticated caller (e.g.
             ``client:<id>``). Without one, the client address is used.
 
@@ -105,22 +112,23 @@ def enforce_rate_limit(
     """
     try:
         result = check_rate_limit(
+            client,
             identity or client_identifier(request),
-            settings.rate_limit_requests,
-            settings.rate_limit_window_seconds,
+            cfg.rate_limit_requests,
+            cfg.rate_limit_window_seconds,
         )
     except RedisError:
         # Audit PERF-3: an explicit policy rather than an accident. Fail
         # closed (default) re-raises, which the RedisError handler turns
         # into a 503; fail open serves the request unthrottled.
-        if not settings.rate_limit_fail_open:
+        if not cfg.rate_limit_fail_open:
             raise
         logger.warning("Rate limiter unavailable; failing open", exc_info=True)
         metrics.rate_limit_fail_open.add(1)
         return RateLimitResult(
             allowed=True,
-            limit=settings.rate_limit_requests,
-            remaining=settings.rate_limit_requests,
+            limit=cfg.rate_limit_requests,
+            remaining=cfg.rate_limit_requests,
             retry_after_seconds=1,
         )
     if not result.allowed:

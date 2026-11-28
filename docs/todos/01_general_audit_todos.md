@@ -5,24 +5,33 @@ IDs match that file; evidence, file:line references and rationale live
 there. Ship order is phase order. Items within a phase are independent
 unless a dependency is noted.
 
-> **Status (2026-11-27):** **Phases 0, 1 and 2 shipped.** Phase 0 was
-> released as v1.0.1 and Phase 1 as v1.1.0, both through the CI-gated
-> pipeline. Phase 2 (operability) is on `feat/phase2-operability`:
-> - OPS-3: liveness/readiness, connect timeouts, clean shutdown;
-> - OPS-2: JSON logs carrying trace ids, OTLP traces across every
->   pipeline stage plus SQL/Redis/LLM, and `aibi.*` metrics;
-> - PERF-3: a fail-open cache and an explicit limiter outage policy;
-> - OPS-4: a non-root, digest-pinned 343 MB image and a hardened compose.
+> **Status (2026-11-28):** **Phases 0–3 shipped.** Phase 0 was released
+> as v1.0.1, Phase 1 as v1.1.0 and Phase 2 as v1.2.0, all through the
+> CI-gated pipeline. Phase 3 (architecture, performance, code quality) is
+> on `feat/phase3-architecture`:
+> - ARCH-2: every tunable is in `Settings`; the engine, Redis and LLM
+>   clients are built in the lifespan and closed on shutdown;
+> - ARCH-1: a `QueryPipeline` service assembled through `Depends`; tests
+>   use `create_app(settings, resources_factory=…)` and
+>   `dependency_overrides`, with no import-path patching left;
+> - ARCH-3 and PERF-2: a provider registry, structured SQL output
+>   (`assumptions` reach the client), a model and token cap per task, one
+>   SDK client per process with a timeout and retries, and an `explain`
+>   flag;
+> - PERF-1: an in-process schema cache, with a fingerprint in the response
+>   cache key;
+> - CQ-2, CQ-3, DX-1: the Streamlit demo no longer crashes, mypy runs
+>   without its disabled checks, and the Makefile no longer lists phantom
+>   targets.
 >
-> Its `feat` commits make the next release minor (1.2.0). Running the
-> full compose stack surfaced two bugs the unit suite couldn't: the image
-> crashed on startup (missing package metadata) and error responses
-> dropped rate-limit headers. Both are fixed, and CI now boots the image.
+> The concurrency decision (stay synchronous, size the threadpool) is
+> written up in [`docs/architecture.md`](../architecture.md). The
+> `feat` commits make the next release minor (1.3.0).
 >
 > **Open decisions:** the broken v1.0.0 release assets (PKG-1) and
-> bumping uv in both repos (OPS-4). Coveralls is now reporting.
-> **Next:** Phase 3 (architecture, performance, code quality), starting
-> with ARCH-2 (central config).
+> bumping uv in both repos (OPS-4).
+> **Next:** Phase 4 (capabilities), starting with FEAT-8 (evaluation
+> harness), so FEAT-2 and FEAT-3 can be measured.
 
 ---
 
@@ -301,54 +310,102 @@ Postgres 18, at 100% line and branch coverage.
   - [x] `CACHE_TTL_SECONDS` (0 disables caching). The size cap shipped with
     SEC-5; hit/miss metrics with OPS-2.
 
-## Phase 3 — Architecture, performance, code quality 🟡
+## Phase 3 — Architecture, performance, code quality 🟡 ✅
 
-- [ ] **ARCH-2 — Centralise config** (do first; it unblocks the rest of
-  this phase). Everything into `Settings` (`REDIS_URL`, limits, TTLs, model
-  names, `max_tokens`, timeouts); `env: Literal[...]`, `SecretStr`, DSN
-  types; `get_settings()` with `lru_cache`; engine, Redis and LLM clients
-  built in `lifespan`, not at import.
-- [ ] **ARCH-1 — `QueryPipeline` service with DI.** Inject `LLMClient`,
-  `SchemaProvider`, `SQLGuard`, `QueryExecutor` and `ResultCache` via
-  `Depends`; thin route; tests use `app.dependency_overrides` instead of
-  monkeypatching import paths.
-- [ ] **ARCH-3 — Task-level LLM interface.** `generate_sql()` with
-  structured output (`{sql, tables_used, assumptions}`) and `explain()`;
-  per-task model and `max_tokens` (SQL generation well above 250); return
-  `usage`; provider registry.
-- [ ] **PERF-1 — Schema cache.** A TTL'd in-process and Redis cache of the
-  rendered schema plus a fingerprint; cache lookup before introspection;
-  fingerprint (not full text) in the response cache key.
-- [ ] **PERF-2 — LLM client lifecycle and concurrency.** One client per
-  process (from `lifespan`), `timeout≈20s`, `max_retries=2`; decide between
-  async (`AsyncOpenAI` + async route ± `asyncpg`) and a sized threadpool,
-  and write the decision down; optional `explain=false` request flag.
+- [x] **ARCH-2 — Centralise config.** — *feat(api): query pipeline …*
+  - [x] Everything is in `Settings`, including new fields: `REDIS_URL`
+    (`RedisDsn`), Redis/DB timeouts, pool size, per-task LLM models and
+    token caps, the LLM timeout and retries, `SCHEMA_CACHE_TTL_SECONDS`
+    and `WORKER_THREADS`. `env` is a `Literal` (case-insensitive), and
+    `OPENAI_API_KEY` is a `SecretStr`. `DATABASE_URL` and `REDIS_URL` are
+    kept out of `repr`.
+  - [x] `get_settings()` is `lru_cache`d, and the module-level `settings`
+    object is gone. Request code reads `app.state.settings` (set by
+    `create_app(cfg)`).
+  - [x] `resources.py` builds the engine, session factory, Redis client,
+    LLM client and schema cache in the lifespan, and closes them on
+    shutdown even when a later startup step fails. Nothing connects at
+    import.
+  - [x] New startup check: outside development, `OPENAI_API_KEY` is
+    required. In development the app starts without one, and queries fail
+    with `llm_unavailable`.
+  - [x] *Deviation:* `DATABASE_URL` stays a `str` validated by
+    SQLAlchemy, because pydantic's DSN types reject the `sqlite://` URLs
+    the tests and the smoke check use. `REDIS_URL`'s default is now
+    `localhost`; compose sets its own.
+- [x] **ARCH-1 — `QueryPipeline` service with DI.** — *feat(api): query pipeline …*
+  - [x] `services/pipeline.py` orchestrates scope → cache → SQL → guard →
+    execute → explain, with the stage spans and metrics. `SQLGuard` and
+    `QueryExecutor` wrap the existing functions with the row cap.
+  - [x] The route is three dependencies and one call. Auth and the rate
+    limit are a dependency (`rate_limited_client`), so they run before a
+    session is opened.
+  - [x] Tests build the app with fakes (`tests/fakes.py`: a fake
+    provider and a stub OpenAI SDK), and swap pieces with
+    `dependency_overrides`. No test patches an import path any more.
+- [x] **ARCH-3 — Task-level LLM interface.** — *feat(api): query pipeline …*
+  - [x] `ChatProvider` (one completion) with
+    `register_provider`/`build_provider`. `LLMClient.generate_sql()` /
+    `.explain()` each have their own model and `max_tokens` (SQL 1000, up
+    from 250).
+  - [x] SQL generation uses a strict JSON schema (`sql`, `tables_used`,
+    `assumptions`). Assumptions are bounded and returned in the response;
+    `tables_used` is logged. A non-JSON answer is used as SQL, since the
+    guard validates it either way.
+  - [x] Both tasks return `usage`, and the pipeline logs input and output
+    tokens per query (FEAT-9 builds on this). Hitting `max_tokens` is
+    logged.
+- [x] **PERF-1 — Schema cache.** — *feat(api): query pipeline …*
+  - [x] `SchemaProvider` caches the scope in process for
+    `SCHEMA_CACHE_TTL_SECONDS` (0 disables it), and is invalidatable. A
+    `QueryScope.fingerprint` (schema, columns and types, redactions) plus
+    the SQL model and row cap form the response cache key, instead of the
+    full schema text.
+  - [x] *Deviation:* no Redis copy of the scope. It is the guard's table
+    allowlist, and the guard must not trust what a Redis client can write.
+    One introspection per process per TTL is cheap.
+  - [x] Cached responses are re-validated against `QueryResponse`; a
+    stale shape is a miss.
+- [x] **PERF-2 — LLM client lifecycle and concurrency.** — *feat(api): query pipeline …*
+  - [x] One OpenAI client per process, with `LLM_TIMEOUT_SECONDS=20` and
+    `LLM_MAX_RETRIES=2`, closed on shutdown.
+  - [x] Decision: stay synchronous on a sized threadpool
+    (`WORKER_THREADS`). The reasoning, sizing and revisit triggers are in
+    `docs/architecture.md`.
+  - [x] `explain: false` skips the explanation call. A cached answer
+    without an explanation is explained once and the entry upgraded.
+  - [x] Verified against the real SDK and a stub server: per-task model,
+    caps and strict schema on the wire, and a hung endpoint failing in
+    about 2.5 s (1 s timeout, 1 retry) with `llm_unavailable`.
 - [x] **ARCH-4 — Lua loading.** Shipped with SEC-3 in Phase 0: the script
   is read once via `importlib.resources` (cached) and packaged as
   package-data (PKG-1). `register_script` per call only hashes the source
   client-side, so there's no per-request I/O or round trip.
-- [ ] **CQ-2 — Cleanup.**
+- [x] **CQ-2 — Cleanup.**
   - [x] `core/security.py` holds SEC-8's key store (Phase 1).
   - [x] `black`/`isort` dropped (Phase 1).
   - [x] The misplaced `noqa` went with SEC-4's route rewrite.
-  - [ ] Move `Product` to `tests/fixtures`.
+  - [x] `Product` moved to `tests/fixtures/models.py`; `db/models.py` is
+    gone.
   - [x] App version from `importlib.metadata` (`telemetry.SERVICE_VERSION`,
     used by FastAPI and the OTel resource; OPS-2).
-  - [ ] Re-enable mypy `union-attr`/`arg-type` and fix what surfaces.
-- [ ] **CQ-3 — Streamlit fixes.** `auto_chart` picks the first categorical
-  and first numeric column (fixes the `IndexError` on 2–3 column results);
-  POST to `/api/query` without the slash; friendly error rendering; show
-  `truncated` (SEC-5).
-- [ ] **DX-1 — Makefile/README truth.** *Partly done:* `.pre-commit-config.yaml`
-  now exists (commit: hygiene, private keys, gitleaks, actionlint, ruff,
-  mypy; push: `make audit` and the full suite at 100% coverage, run with
-  `SKIP_DOTENV=1`), with `make hooks-install` / `make hooks-run`. Both a
-  bad commit and a coverage-failing push were shown to be blocked.** Fix `help`, add `check`, remove
-  `release: … publish` and `tempTarget`, fix `venv_setup` and `clean`;
-  add `.pre-commit-config.yaml` (ruff, ruff-format, mypy, end-of-file,
-  detect-private-key) or remove the README claim; add the Roadmap section
-  (pointing at this backlog) or drop it from the TOC; fill in the
-  `pyproject` URLs.
+  - [x] mypy `union-attr`/`arg-type` re-enabled across the package, tests,
+    frontend and examples; one test helper needed narrowing.
+- [x] **CQ-3 — Streamlit fixes.** — *fix(frontend): …*
+  - [x] `auto_chart` charts the first label column against the first
+    numeric one, skipping id columns. It no longer crashes on 2–3 column
+    results.
+  - [x] POSTs to `/api/query`. `ApiError` carries the message, code and
+    request id; 429s show `Retry-After`; validation errors are joined.
+  - [x] Shows `truncated`, `assumptions` and the `explain` toggle.
+  - [x] `tests/test_frontend.py` covers it.
+- [x] **DX-1 — Makefile/README truth.** — *chore(dx): …*
+  - [x] `.pre-commit-config.yaml` (Phase 1).
+  - [x] `help` lists the real targets. Added `check`. Removed `release`
+    and `tempTarget`. Fixed `venv_setup` (no background `&`/`source`)
+    and `clean` (`.pyc` and `.coverage` are files; `.venv` is skipped).
+  - [x] The README Roadmap is current. The `pyproject` URLs point at real
+    pages, and `docs/architecture.md` is new.
 
 ## Phase 4 — Capabilities (needs a scope decision per item) 🟢
 

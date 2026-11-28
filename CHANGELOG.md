@@ -1,6 +1,76 @@
 # CHANGELOG
 
 
+## v1.3.0 (2026-11-28)
+
+### Features
+
+- **api**: Query pipeline with injected clients, structured LLM output and a schema cache
+  ([#12](https://github.com/saladgg/ai-bi-analytics/pull/12),
+  [`22c28ba`](https://github.com/saladgg/ai-bi-analytics/commit/22c28ba56c9d8102ef05d84a148995cbe706b51b))
+
+* feat(api): query pipeline with injected clients, structured LLM output and a schema cache
+
+Phase 3 of the general audit (ARCH-1, ARCH-2, ARCH-3, PERF-1, PERF-2, CQ-2).
+
+- Settings: every tunable is a field (Redis URL and timeouts, DB connect timeout and pool size,
+  per-task LLM model and token cap, LLM timeout and retries, schema-cache TTL, worker threads). ENV
+  is a Literal, OPENAI_API_KEY a SecretStr, and both URLs stay out of repr. get_settings() replaces
+  the import-time singleton. - resources.py builds the engine, Redis client, LLM client and schema
+  cache in the lifespan and closes them on shutdown, even if a later startup step fails. Nothing
+  connects at import. - QueryPipeline (services/pipeline.py) owns the NL -> SQL -> result flow. The
+  route takes it, the session and the rate-limited caller as dependencies. Auth and the rate limit
+  run before a session opens. - LLM layer: a ChatProvider registry, and an LLMClient with
+  generate_sql() (strict JSON schema: sql, tables_used, assumptions) and explain(), each with its
+  own model and token cap. Both return usage, which is logged per query. One SDK client per process,
+  with a timeout and bounded retries. - The response gains `assumptions`. The request gains
+  `explain` (false skips the second LLM call). A cached answer stored without an explanation is
+  explained once and the entry upgraded. - SchemaProvider caches the query scope in process for
+  SCHEMA_CACHE_TTL_SECONDS. The scope's fingerprint, the SQL model and the row cap form the response
+  cache key. Cached responses are re-validated, and a stale shape is a miss. - Outside development,
+  startup now requires OPENAI_API_KEY. - Tests build the app with fakes through create_app(settings,
+  resources_factory=...) and use dependency_overrides. Nothing patches import paths. The Product
+  model moved to tests/fixtures.
+
+* fix(frontend): stop the demo crashing on small results and show API errors clearly
+
+Audit CQ-3.
+
+- auto_chart read columns 2 and 3 and raised IndexError on 2-3 column results. It now charts the
+  first label column against the first numeric one, skips id columns, and draws nothing when no pair
+  fits. - The demo POSTs to /api/query; the trailing slash forced a redirect. - ApiError carries the
+  API's message, code and request id. 429s mention Retry-After, and validation errors are joined
+  into one message. - The page flags truncated results and the model's assumptions, and has an
+  "Explain the result" toggle that maps to the new `explain` flag.
+
+* chore(dx): re-enable mypy checks, fix Makefile targets and project URLs
+
+Audit CQ-2 and DX-1.
+
+- mypy runs with union-attr and arg-type enabled again. - `make help` lists the targets that exist.
+  Added `make check` (what CI's test job runs). - Removed the `release` target (it depended on a
+  missing `publish`) and `tempTarget`. - Fixed `venv_setup`, which backgrounded uv and sourced the
+  venv in a throwaway shell. - Fixed `clean`, which treated .pyc and .coverage as directories. It
+  now also skips .venv. - The pyproject URLs point at real pages.
+
+* docs: architecture notes, configuration reference and Phase 3 status
+
+- docs/architecture.md covers: - the request path and how clients are wired and injected; - the LLM
+  layer and how to add a provider; - both caches and why the scope isn't shared through Redis; - the
+  PERF-2 decision to stay synchronous on a sized threadpool. - README: the pipeline diagram, the
+  task-level LLM interface, the schema cache, the explain flag and assumptions, and the new
+  settings. - .env.example lists the new settings. - Backlog: Phase 3 ticked, with its deviations.
+
+* fix(config): don't refuse to start on .env entries the app doesn't read
+
+pydantic-settings forbids unknown .env keys by default. .env.example has carried REDIS_PASSWORD
+  (read by docker compose) since v1.2.0, so `cp .env.example .env` produced a config the app refused
+  to load. The same applied to FORWARDED_ALLOW_IPS (uvicorn) and the OTEL_EXPORTER_* variables once
+  uncommented. Unknown entries are now ignored. Environment variables were never affected.
+
+Tests load .env.example itself and a .env with those extras.
+
+
 ## v1.2.0 (2026-11-27)
 
 ### Features

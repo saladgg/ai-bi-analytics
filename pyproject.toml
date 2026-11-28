@@ -65,7 +65,7 @@ dev = [
 # only the default `dev` group, and the Dockerfile's --no-dev drops that.
 frontend = [
     "pandas==2.3.3",
-    "plotly==6.6.0",
+    "plotly==7.1.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32",
     "streamlit>=1.55.0",

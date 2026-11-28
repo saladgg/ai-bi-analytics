@@ -21,14 +21,18 @@ This UI is deliberately lightweight and has several limitations:
 - API key is handled client-side (not secure for public use)
 - No input validation or rate limiting
 - No persistent state (no saved queries/dashboards)
-- Basic error handling
-- Limited visualization logic
+- Limited visualization logic: one bar chart, the first label column
+  against the first numeric column (id columns skipped)
+
+API errors are shown with their message, error code and request id (to
+match the server log), and truncated results and the model's assumptions
+are flagged above the table.
 
 ## Set environment variables:
 
 ```bash
 export API_KEY=your-api-key
-export API_BASE_URL=http://localhost:8000
+export API_BASE_URL=http://localhost:8000   # the default
 ```
 
 ## ▶️ Run the app
